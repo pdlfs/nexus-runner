@@ -65,8 +65,13 @@
  * usage: nexus-runner [options] mercury-protocol subnet
  *
  * options:
+ *  -B bytes     batch buffer target for network output queues
+ *  -b bytes     batch buffer target for shared memory output queues
  *  -c count     number of RPCs to perform
+ *  -d count     delivery queue limit
  *  -l limit     limit # of concurrent client RPC requests ("-l 1" = serial)
+ *  -M count     maxrpcs for network output queues
+ *  -m count     maxrpcs for shared memory output queues
  *  -p baseport  base port number
  *  -q           quiet mode - don't print during RPCs
  *  -r n         enable tag suffix with this run number
@@ -75,11 +80,11 @@
  * size related options:
  * -i size     input req size (> 24 if specified)
  *
- * by default the input reqs contain:
+ * the input reqs contain:
  * 
- *  <seq,xlen,src,src-rep,dest-rep,dest>    seq#, xlen, and rank#s
+ *  <seq,xlen,src,dest>
  *
- * (so 6*sizeof(int) == 24, assuming 32 bit ints).  the "-i" flag can
+ * (so 4*sizeof(int) == 16, assuming 32 bit ints).  the "-i" flag can
  * be used to add additional un-used data to the payload if desired.
  * (this is the "xlen" --- number of extra bytes at end)
  *
@@ -87,11 +92,10 @@
  *
  *   ./nexus-runner -l 1 -c 50 -q cci+tcp 10.92
  *
- * XXXCDC: queueing options
  * XXXCDC: port# handling --- maybe just add rank to base
- * XXXCDC: caches?
+ * XXXCDC: handle caches?
  * XXXCDC: non-ip may not be possible with nexus
- * XXXCDC: when ack?  when know to exit?
+ * XXXCDC: when know to exit?   (flushing)
  */
 
 
@@ -242,7 +246,10 @@ int64_t getsize(char *from) {
  * default values for port and count
  */
 #define DEF_BASEPORT 19900 /* starting TCP port we listen on (instance 0) */
+#define DEF_BUFTARGET 1    /* target #bytes for a batch */
 #define DEF_COUNT 5        /* default # of msgs to send and recv in a run */
+#define DEF_DELIVERQMAX 1  /* max# of reqs in deliverq before using waitq */
+#define DEF_MAXRPCS 1      /* max# of outstanding RPCs */
 #define DEF_TIMEOUT 120    /* alarm timeout */
 
 struct callstate;          /* forward decl. for free list in struct is */
@@ -258,8 +265,13 @@ struct g {
     char *hgproto;           /* hg protocol to use */
     char *hgsubnet;          /* subnet to use (XXX: assumes IP) */
     int baseport;            /* base port number */
+    int buftarg_net;         /* batch target for network queues */
+    int buftarg_shm;         /* batch target for shared memory queues */
     int count;               /* number of msgs to send/recv in a run */
+    int deliverq_max;        /* max# reqs in deliverq before waitq */
     int limit;               /* limit # of concurrent RPCs at client */
+    int maxrpcs_net;         /* max # outstanding RPCs, network */
+    int maxrpcs_shm;         /* max # outstanding RPCs, shared memory */
     int quiet;               /* don't print so much */
     int rflag;               /* -r tag suffix spec'd */
     int rflagval;            /* value for -r */
@@ -713,8 +725,13 @@ static void usage(const char *msg) {
     if (msg) fprintf(stderr, "%s: %s\n", argv0, msg);
     fprintf(stderr, "usage: %s [options] mercury-protocol subnet\n", argv0);
     fprintf(stderr, "\noptions:\n");
+    fprintf(stderr, "\t-B bytes    batch buf target for network\n");
+    fprintf(stderr, "\t-b bytes    batch buf target for shm\n");
     fprintf(stderr, "\t-c count    number of RPCs to perform\n");
+    fprintf(stderr, "\t-d count    delivery queue size limit\n");
     fprintf(stderr, "\t-l limit    limit # of client concurrent RPCs\n");
+    fprintf(stderr, "\t-M count    maxrpcs for network output queues\n");
+    fprintf(stderr, "\t-m count    maxrpcs for shm output queues\n");
     fprintf(stderr, "\t-p port     base port number\n");
     fprintf(stderr, "\t-q          quiet mode\n");
     fprintf(stderr, "\t-r n        enable tag suffix with this run number\n");
@@ -766,14 +783,31 @@ int main(int argc, char **argv) {
     if (MPI_Comm_size(MPI_COMM_WORLD, &g.size) != MPI_SUCCESS) 
         complain(1, 0, "unable to get MPI size");
     g.baseport = DEF_BASEPORT;
+    g.buftarg_net = DEF_BUFTARGET;
+    g.buftarg_shm = DEF_BUFTARGET;
     g.count = DEF_COUNT;
+    g.deliverq_max = DEF_DELIVERQMAX;
+    g.maxrpcs_net = DEF_MAXRPCS;
+    g.maxrpcs_shm = DEF_MAXRPCS;
     g.timeout = DEF_TIMEOUT;
 
-    while ((ch = getopt(argc, argv, "c:i:l:p:qr:t:")) != -1) {
+    while ((ch = getopt(argc, argv, "B:b:c:d:i:l:M:m:p:qr:t:")) != -1) {
         switch (ch) {
+            case 'B':
+                g.buftarg_net = atoi(optarg);
+                if (g.buftarg_net < 1) usage("bad buftarget net");
+                break;
+            case 'b':
+                g.buftarg_shm = atoi(optarg);
+                if (g.buftarg_shm < 1) usage("bad buftarget shm");
+                break;
             case 'c':
                 g.count = atoi(optarg);
                 if (g.count < 1) usage("bad count");
+                break;
+            case 'd':
+                g.deliverq_max = atoi(optarg);
+                if (g.deliverq_max < 1) usage("bad deliverq_max shm");
                 break;
             case 'i':
                 g.inreqsz = getsize(optarg);
@@ -782,6 +816,14 @@ int main(int argc, char **argv) {
             case 'l':
                 g.limit = atoi(optarg);
                 if (g.limit < 1) usage("bad limit");
+                break;
+            case 'M':
+                g.maxrpcs_net = atoi(optarg);
+                if (g.maxrpcs_net < 1) usage("bad maxrpc net");
+                break;
+            case 'm':
+                g.maxrpcs_shm = atoi(optarg);
+                if (g.maxrpcs_shm < 1) usage("bad maxrpc shm");
                 break;
             case 'p':
                 g.baseport = atoi(optarg);
@@ -834,6 +876,11 @@ int main(int argc, char **argv) {
             printf("\tsuffix     = %s\n", g.tagsuffix);
         printf("\ttimeout    = %d\n", g.timeout);
         printf("sizes:\n");
+        printf("\tbuftarget  = %d / %d (net/shm)\n", g.buftarg_net,
+               g.buftarg_shm);
+        printf("\tmaxrpcs    = %d / %d (net/shm)\n", g.maxrpcs_net,
+               g.maxrpcs_shm);
+        printf("\tdeliverqmx = %d\n", g.deliverq_max);
         printf("\tinput      = %d\n", (g.inreqsz == 0) ? 4 : g.inreqsz);
         if (g.xcallcachemax)
             printf("\tcallcache  = %d max\n", g.xcallcachemax);

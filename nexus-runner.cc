@@ -57,32 +57,31 @@
  * itself does not have any topology configuration command line flags,
  * it uses whatever it gets from the MPI launcher.
  *
- * by default the client side of the program sends as many RPCs as
- * possible in parallel.  you can limit the number of active RPCs
- * using the "-l" flag.  specifying "-l 1" will cause the client side
- * of the program to fully serialize all RPC calls.
+ * the shuffler queue config controls how much buffering is used and 
+ * how many RPCs can be active at one time.
  *
  * usage: nexus-runner [options] mercury-protocol subnet
  *
  * options:
- *  -B bytes     batch buffer target for network output queues
- *  -b bytes     batch buffer target for shared memory output queues
  *  -c count     number of RPCs to perform
- *  -d count     delivery queue limit
- *  -l limit     limit # of concurrent client RPC requests ("-l 1" = serial)
- *  -M count     maxrpcs for network output queues
- *  -m count     maxrpcs for shared memory output queues
  *  -p baseport  base port number
  *  -q           quiet mode - don't print during RPCs
  *  -r n         enable tag suffix with this run number
  *  -t secs      timeout (alarm)
+ *
+ * shuffler queue config:
+ *  -B bytes     batch buffer target for network output queues
+ *  -b bytes     batch buffer target for shared memory output queues
+ *  -d count     delivery queue limit
+ *  -M count     maxrpcs for network output queues
+ *  -m count     maxrpcs for shared memory output queues
  *
  * size related options:
  * -i size     input req size (> 24 if specified)
  *
  * the input reqs contain:
  * 
- *  <seq,xlen,src,dest>
+ *  <seq,xlen,src,dest><extra bytes...>
  *
  * (so 4*sizeof(int) == 16, assuming 32 bit ints).  the "-i" flag can
  * be used to add additional un-used data to the payload if desired.
@@ -90,7 +89,7 @@
  *
  * examples:
  *
- *   ./nexus-runner -l 1 -c 50 -q cci+tcp 10.92
+ *   ./nexus-runner -c 50 -q cci+tcp 10.92
  *
  * XXXCDC: port# handling --- maybe just add rank to base
  * XXXCDC: handle caches?
@@ -98,27 +97,23 @@
  * XXXCDC: when know to exit?   (flushing)
  */
 
-
-#include <assert.h>
 #include <ctype.h>
-#include <errno.h>
-#include <inttypes.h>
+#include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
-#include <signal.h>
+
 #include <sys/resource.h>
-#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
 
-#include <mpi.h>
-
 #include <mercury.h>
 #include <mercury_macros.h>
+
+#include <mpi.h>   /* XXX: nexus requires this */
 
 #include <deltafs-nexus/deltafs-nexus_api.h>
 
@@ -252,13 +247,10 @@ int64_t getsize(char *from) {
 #define DEF_MAXRPCS 1      /* max# of outstanding RPCs */
 #define DEF_TIMEOUT 120    /* alarm timeout */
 
-struct callstate;          /* forward decl. for free list in struct is */
-struct respstate;
-
 /*
- * g: shared global data (e.g. from the command line)
+ * gs: shared global data (e.g. from the command line)
  */
-struct g {
+struct gs {
     int ninst;               /* currently locked at 1 */
     /* note: MPI rank stored in global "myrank" */
     int size;                /* world size (from MPI) */
@@ -269,7 +261,6 @@ struct g {
     int buftarg_shm;         /* batch target for shared memory queues */
     int count;               /* number of msgs to send/recv in a run */
     int deliverq_max;        /* max# reqs in deliverq before waitq */
-    int limit;               /* limit # of concurrent RPCs at client */
     int maxrpcs_net;         /* max # outstanding RPCs, network */
     int maxrpcs_shm;         /* max # outstanding RPCs, shared memory */
     int quiet;               /* don't print so much */
@@ -279,15 +270,11 @@ struct g {
     char tagsuffix[64];      /* tag suffix: ninst-count-mode-limit-run# */
 
     /*
-     * inreq size includes byte used for seq, src, src-rep, dest-rep, dest.
-     * if is zero then we just have those five numbers.  otherwise
+     * inreq size includes bytes used for seq,xlen,src,dest.
+     * if is zero then we just have those four numbers.  otherwise
      * it must be >= 40 to account for the header (we pad the rest).
      */
     int inreqsz;             /* input request size */
-
-    /* cache max sizes: -1=disable cache, 0=unlimited, otherwise limit */
-    int xcallcachemax;       /* call cache max size (in entries) */
-    int yrespcachemax;       /* resp cache max size (in entries) */
 } g;
 
 /*
@@ -298,384 +285,12 @@ struct g {
 struct is {
     int n;                   /* our instance number (0 .. n-1) */
     nexus_ctx_t *nxp;        /* nexus context */
-    hg_class_t *lhgclass;    /* local class for this instance */
-    hg_context_t *lhgctx;    /* local context for this instance */
-    hg_class_t *rhgclass;    /* remote class for this instance */
-    hg_context_t *rhgctx;    /* remote context for this instance */
-    hg_id_t mylrpcid;        /* the ID of the instance's RPC (local ctx) */
-    hg_id_t myrrpcid;        /* the ID of the instance's RPC (remote ctx) */
-    pthread_t nthread;       /* network thread */
     char myfun[64];          /* my function name */
-    int nprogress;           /* number of times through progress loop */
-    int ntrigger;            /* number of times trigger called */
-    int recvd;               /* server: request callback received */
-    int responded;           /* server: completed responses */
-    struct respstate *rfree; /* server: free resp state structures */
-    int nrfree;              /* length of rfree list */
-
-    /* client side sending flow control */
-    pthread_mutex_t slock;   /* lock for this block of vars */
-    pthread_cond_t scond;    /* client blocks here if waiting for network */
-    int scond_mode;          /* mode for scond */
-    int nstarted;            /* number of RPCs started */
-    int nsent;               /* number of RPCs successfully sent */
-#define SM_OFF      0        /* don't signal client */
-#define SM_SENTONE  1        /* finished sending an RPC */
-#define SM_SENTALL  2        /* finished sending all RPCs */
-    struct callstate *cfree; /* free call state structures */
-    int ncfree;              /* length of cfree list */
-
-    /* no mutex since only the main thread can write it */
-    int sends_done;          /* set to non-zero when nsent is done */
+    shuffler_t shand;        /* shuffler handler */
+    int nsends;              /* number of times we've called send */
+    int ncallbacks;          /* #times our callback was called */
 };
-struct is *is;    /* an array of state */
-
-/*
- * hand roll non-boost xdr functions
- */
-
-/* helper macro to reduce the verbage ... */
-#define procheck(R,MSG) if ((R) != HG_SUCCESS) { \
-    hg_log_write(HG_LOG_TYPE_ERROR, "HG", __FILE__, __LINE__, __func__, MSG); \
-    return(R); \
-}
-
-/*
- * rpcin_t: arg for making the RPC call.   variable length (depends on
- * inreqsz option and how it sets xlen).
- */
-typedef struct {
-    int32_t seq;            /* sequence number */
-    int32_t xlen;           /* extra length */
-    int32_t src;            /* source rank */
-    int32_t src_rep;        /* source rep */
-    int32_t dst_rep;        /* dest rep */
-    int32_t dst;            /* dest rank */
-    char *xbuf;             /* extra buffer */
-} rpcin_t;
-
-/*
- * encode/decode the rpcin_t structure
- */
-static hg_return_t hg_proc_rpcin_t(hg_proc_t proc, void *data) {
-    hg_return_t ret = HG_SUCCESS;
-    hg_proc_op_t op = hg_proc_get_op(proc);
-    rpcin_t *struct_data = (rpcin_t *) data;
-    int32_t xlen;
-
-    if (op == HG_DECODE) {
-        /* don't need to memset whole thing */
-        struct_data->xbuf = NULL;
-    }
-
-    ret = hg_proc_hg_int32_t(proc, &struct_data->seq);
-    procheck(ret, "Proc err seq");
-    ret = hg_proc_hg_int32_t(proc, &struct_data->xlen);
-    procheck(ret, "Proc err xlen");
-    ret = hg_proc_hg_int32_t(proc, &struct_data->src);
-    procheck(ret, "Proc err src");
-    ret = hg_proc_hg_int32_t(proc, &struct_data->src_rep);
-    procheck(ret, "Proc err src_rep");
-    ret = hg_proc_hg_int32_t(proc, &struct_data->dst_rep);
-    procheck(ret, "Proc err dst_rep");
-    ret = hg_proc_hg_int32_t(proc, &struct_data->dst);
-    procheck(ret, "Proc err dst");
-
-    xlen = struct_data->xlen;
-    if (xlen > 0) {
-        switch (op) {
-        case HG_DECODE:
-            struct_data->xbuf = (char *)malloc(xlen);
-            if (struct_data->xbuf == NULL) {
-                hg_log_write(HG_LOG_TYPE_ERROR, "HG", __FILE__, __LINE__,
-                             __func__, "Proc xbuf malloc");
-                return(HG_NOMEM_ERROR);
-            }
-            /*FALLTHROUGH*/
-        case HG_ENCODE:
-            ret = hg_proc_memcpy(proc, struct_data->xbuf, xlen);
-            procheck(ret, "Proc err xbuf");
-            break;
-
-        case HG_FREE:
-            if (struct_data->xbuf) {
-                free(struct_data->xbuf);
-                struct_data->xbuf = NULL;
-            }
-            break;
-        }
-    }
-
-    return(ret);
-}
-
-/*
- * rpcout_t: return value from the server.   we echo back the 
- * the sequence number and source rank, adding a return value.
- */
-typedef struct {
-    int32_t seq;                   /* sequence number */
-    int32_t src;                   /* source rank */
-    int32_t ret;                   /* return value */
-} rpcout_t;
-
-/*
- * encode/decode the rpcout_t structure
- */
-static hg_return_t hg_proc_rpcout_t(hg_proc_t proc, void *data) {
-    hg_return_t ret = HG_SUCCESS;
-    hg_proc_op_t op = hg_proc_get_op(proc);
-    rpcout_t *struct_data = (rpcout_t *) data;
-
-    ret = hg_proc_hg_int32_t(proc, &struct_data->seq);
-    procheck(ret, "Proc err seq");
-    ret = hg_proc_hg_int32_t(proc, &struct_data->src);
-    procheck(ret, "Proc err src");
-    ret = hg_proc_hg_int32_t(proc, &struct_data->ret);
-    procheck(ret, "Proc err ret");
-
-    return(ret);
-}
-
-#if 0
-/*
- * callstate: state of an RPC call.  pulls together all the call info
- * in one structure.
- */
-struct callstate {
-    struct is *isp;         /* instance that owns this call */
-    hg_handle_t callhand;   /* main handle for the call */
-    rpcin_t in;             /* call args */
-    /* rd_rmabuf == wr_rmabuf if -O flag (one buffer flag) */
-    void *rd_rmabuf;        /* buffer used for rma read */
-    void *wr_rmabuf;        /* buffer used for rma write */
-    struct callstate *next; /* linkage for free list */
-};
-
-/*
- * respstate: state of an RPC response.
- */
-struct respstate {
-    struct is *isp;         /* instance that owns this call */
-    hg_handle_t callhand;   /* main handle for the call */
-    rpcin_t in;             /* call in args */
-    rpcout_t out;           /* resp args */
-    void *lrmabuf;          /* local srvr rmabuf (malloc'd), sz=g.blrmasz */
-    hg_bulk_t lrmabufhand;  /* bulk handle to local rmabuf */
-    int phase;              /* current phase */
-#define RS_READCLIENT  0    /* server is RMA reading from client */
-#define RS_WRITECLIENT 1    /* server is RMA writing to client */
-#define RS_RESPOND     2    /* server is finishing the RPC */
-    struct respstate *next; /* linkage for free list */
-};
-
-/*
- * get_callstate: get a callstate for an is.  try the free list first,
- * then allocate a new one if the free list is empty... we grab slock
- * to access the list.
- */
-struct callstate *get_callstate(struct is *isp) {
-    struct callstate *rv;
-    int64_t want;
-    hg_size_t bs;
-
-    rv = NULL;
-
-    /* try the free list first */
-    pthread_mutex_lock(&isp->slock);
-    if (isp->cfree) {
-        rv = isp->cfree;
-        isp->cfree = rv->next;
-        isp->ncfree--;
-    }
-    pthread_mutex_unlock(&isp->slock);
-
-    if (rv)
-        return(rv);    /* success via free list */
-
-    /*
-     * must malloc a new one.  this can be expensive, thus the free list...
-     */
-    rv = (struct callstate *) malloc(sizeof(*rv));
-    if (!rv)
-        complain(1, "get_callstate malloc failed");
-    rv->isp = isp;
-
-    /* the main handle ... */
-    if (HG_Create(isp->hgctx, isp->remoteaddr,
-                  isp->myrpcid, &rv->callhand) != HG_SUCCESS)
-        complain(1, "get_callstate handle alloc failed");
-
-    /*
-     * start ext_fmt setup and allocate xbuf if needed...
-     *
-     * note: g.inreqsz includes the EXTHDRSZ (8) byte header, so we
-     * don't need to allocate space here for that because that's
-     * handled by the proc routine from in.seq and in.ext_fmt.
-     * the length in in.ext_fmt is the length of xbuf, so it is
-     * always EXTHDRSZ less than g.inreqsz.
-     */
-    if (g.inreqsz < RPC_EXTHDRSZ) {
-        rv->in.ext_fmt = 0;
-        rv->in.xbuf = NULL;
-    } else {
-        rv->in.ext_fmt = g.inreqsz - RPC_EXTHDRSZ;
-        rv->in.xbuf = (char *)malloc(rv->in.ext_fmt);
-        if (!rv->in.xbuf) complain(1, "getcallstate xbuf malloc failed");
-    }
-
-    /*
-     * set bulk buffers and handles to zero if we are not using bulk.
-     * otherwise allocate the bulk buffer(s) and a handle for it.  if
-     * we are sending and recving and the oneflag is set, then we use
-     * the same buffer (in read/write mode) for the rmas.  in that case
-     * we size the buffer to be the larger of the two requested sizes.
-     */
-    if (g.bsendsz == 0) {
-        rv->rd_rmabuf = NULL;
-        rv->in.bread = HG_BULK_NULL;
-        rv->in.nread = 0;
-    } else {
-        want = g.bsendsz;
-        if (g.oneflag && g.brecvsz > want)   /* oneflag: rd/wr same buffer? */
-            want = g.brecvsz;
-        rv->rd_rmabuf = malloc(want);
-        bs = want;
-        if (HG_Bulk_create(isp->hgclass, 1, &rv->rd_rmabuf, &bs,
-                           (g.oneflag) ? HG_BULK_READWRITE : HG_BULK_READ_ONLY,
-                           &rv->in.bread) != HG_SUCCESS)
-            complain(1, "get_callstate: bulk create 1 failed?");
-        rv->in.nread = g.bsendsz;
-        rv->in.ext_fmt |= EXT_BREAD;
-    }
-
-    if (g.brecvsz == 0) {
-        rv->wr_rmabuf = NULL;
-        rv->in.bwrite = HG_BULK_NULL;
-        rv->in.nwrite = 0;
-    } else if (g.oneflag) {
-        rv->wr_rmabuf = rv->rd_rmabuf;   /* shared read/write buffer */
-        rv->in.bwrite = rv->in.bread;    /* shared reference */
-        rv->in.nwrite = g.brecvsz;
-        rv->in.ext_fmt |= EXT_BWRITE;
-    } else {
-        rv->wr_rmabuf = malloc(g.brecvsz);
-        bs = g.brecvsz;
-        if (HG_Bulk_create(isp->hgclass, 1, &rv->wr_rmabuf, &bs,
-                           HG_BULK_WRITE_ONLY, &rv->in.bwrite) != HG_SUCCESS)
-            complain(1, "get_callstate: bulk create 2 failed?");
-        rv->in.nwrite = g.brecvsz;
-        rv->in.ext_fmt |= EXT_BWRITE;
-    }
-
-    rv->next = NULL;    /* just to be safe */
-    return(rv);
-
-}
-
-/*
- * free_callstate: this frees all resources associated with the callstate.
- * the callstate should be allocated and not on the free list.
- */
-void free_callstate(struct callstate *cs) {
-    HG_Destroy(cs->callhand);
-
-    if (cs->in.bread != HG_BULK_NULL)
-        HG_Bulk_free(cs->in.bread);
-    if (cs->in.bwrite != HG_BULK_NULL && !g.oneflag)
-        HG_Bulk_free(cs->in.bwrite);
-    if (cs->in.xbuf)
-        free(cs->in.xbuf);
-
-    if (cs->rd_rmabuf)
-        free(cs->rd_rmabuf);
-    if (cs->wr_rmabuf && !g.oneflag)
-        free(cs->wr_rmabuf);
-
-    free(cs);
-}
-
-/*
- * get_respstate: get a respstate for an is.  try the free list first,
- * then allocate a new one if the free list is empty...  no locking
- * required because all work is done in the network thread and there
- * is currently only one of those.
- */
-struct respstate *get_respstate(struct is *isp) {
-    struct respstate *rv;
-    hg_size_t lrmasz;
-
-    rv = NULL;
-
-    /* try the free list first */
-    if (isp->rfree) {
-        rv = isp->rfree;
-        isp->rfree = rv->next;
-        isp->nrfree--;
-    }
-
-    if (rv)
-        return(rv);    /* success via free list */
-
-    /*
-     * must malloc a new one.
-     */
-    rv = (struct respstate *) malloc(sizeof(*rv));
-    if (!rv)
-        complain(1, "get_respstate malloc failed");
-    rv->isp = isp;
-
-    /*
-     * look for extended format for output and handle it.  g.outreqsz
-     * includes the EXTHDRSZ (8) byte header, so we don't allocate
-     * that here.
-     */
-    if (g.outreqsz < RPC_EXTHDRSZ) {
-        rv->out.olen = 0;
-        rv->out.obuf = NULL;
-    } else {
-        rv->out.olen = g.outreqsz - RPC_EXTHDRSZ;
-        rv->out.obuf = (char *)malloc(rv->out.olen);
-        if (!rv->out.obuf) complain(1, "getrespstate obuf malloc failed");
-    }
-
-    /*
-     * allocate local rma buffer if needed
-     */
-    lrmasz = g.blrmasz;
-    if (lrmasz == 0) {
-        rv->lrmabuf = NULL;
-        rv->lrmabufhand = HG_BULK_NULL;
-    } else {
-        rv->lrmabuf = malloc(lrmasz);
-        if (rv->lrmabuf == NULL)
-            complain(1, "malloc of lrmabuf failed");
-        if (HG_Bulk_create(isp->hgclass, 1, &rv->lrmabuf, &lrmasz,
-                           HG_BULK_READWRITE, &rv->lrmabufhand) != HG_SUCCESS)
-            complain(1, "get_respstate bulk create failed?");
-    }
-
-    rv->next = NULL;    /* just to be safe */
-    return(rv);
-
-}
-
-/*
- * free_respstate: this frees all resources associated with the respstate.
- * the respstate should be allocated and not on the free list.
- */
-void free_respstate(struct respstate *rs) {
-    if (rs->out.obuf)
-        free(rs->out.obuf);
-
-    if (rs->lrmabuf)
-        free(rs->lrmabuf);
-    if (rs->lrmabufhand)
-        HG_Bulk_free(rs->lrmabufhand);
-
-    free(rs);
-}
-#endif 
+struct is *isa;    /* an array of state */
 
 /*
  * alarm signal handler
@@ -685,34 +300,13 @@ void sigalarm(int foo) {
     fprintf(stderr, "SIGALRM detected (%d)\n", myrank);
     for (lcv = 0 ; lcv < g.ninst ; lcv++) {
         fprintf(stderr, "%d: %d: @alarm: ", myrank, lcv);
-        if (is[lcv].lhgctx == NULL) {
-            fprintf(stderr, "no context\n");
-            continue;
-        }
-        fprintf(stderr,
-                "srvr=%d(%d), clnt=%d(%d), sdone=%d, prog=%d, trig=%d\n",
-                is[lcv].recvd, is[lcv].recvd - is[lcv].responded,
-                is[lcv].nstarted, is[lcv].nstarted - is[lcv].nsent,
-                is[lcv].sends_done, is[lcv].nprogress, is[lcv].ntrigger);
+        fprintf(stderr, "nsends=%d, ncallbacks=%d\n", 
+                isa[lcv].nsends, isa[lcv].ncallbacks);
     }
     fprintf(stderr, "Alarm clock\n");
     MPI_Finalize();
     exit(1);
 }
-
-/*
- * forward prototype decls.
- */
-static void *run_instance(void *arg);   /* run one instance */
-static hg_return_t rpchandler(hg_handle_t handle); /* server cb */
-#if 0
-static void *run_network(void *arg);    /* per-instance network thread */
-static hg_return_t lookup_cb(const struct hg_cb_info *cbi);  /* client cb */
-static hg_return_t forw_cb(const struct hg_cb_info *cbi);  /* client cb */
-static hg_return_t advance_resp_phase(struct respstate *rs);
-static hg_return_t reply_bulk_cb(const struct hg_cb_info *cbi);  /* server cb */
-static hg_return_t reply_sent_cb(const struct hg_cb_info *cbi);  /* server cb */
-#endif
 
 /*
  * usage
@@ -723,24 +317,22 @@ static void usage(const char *msg) {
     if (myrank) goto skip_prints;
 
     if (msg) fprintf(stderr, "%s: %s\n", argv0, msg);
-    fprintf(stderr, "usage: %s [options] mercury-protocol subnet\n", argv0);
+    fprintf(stderr, "usage: %s [options] mercury-protocol [subnet]\n", argv0);
     fprintf(stderr, "\noptions:\n");
-    fprintf(stderr, "\t-B bytes    batch buf target for network\n");
-    fprintf(stderr, "\t-b bytes    batch buf target for shm\n");
     fprintf(stderr, "\t-c count    number of RPCs to perform\n");
-    fprintf(stderr, "\t-d count    delivery queue size limit\n");
-    fprintf(stderr, "\t-l limit    limit # of client concurrent RPCs\n");
-    fprintf(stderr, "\t-M count    maxrpcs for network output queues\n");
-    fprintf(stderr, "\t-m count    maxrpcs for shm output queues\n");
     fprintf(stderr, "\t-p port     base port number\n");
     fprintf(stderr, "\t-q          quiet mode\n");
     fprintf(stderr, "\t-r n        enable tag suffix with this run number\n");
     fprintf(stderr, "\t-t sec      timeout (alarm), in seconds\n");
     fprintf(stderr, "\nuse '-l 1' to serialize RPCs\n\n");
-    fprintf(stderr, "size related options:\n");
+    fprintf(stderr, "shuffler queue config:\n");
+    fprintf(stderr, "\t-B bytes    batch buf target for network\n");
+    fprintf(stderr, "\t-b bytes    batch buf target for shm\n");
+    fprintf(stderr, "\t-d count    delivery queue size limit\n");
+    fprintf(stderr, "\t-M count    maxrpcs for network output queues\n");
+    fprintf(stderr, "\t-m count    maxrpcs for shm output queues\n");
+    fprintf(stderr, "\nsize related options:\n");
     fprintf(stderr, "\t-i size     input req size (>= 24 if specified)\n");
-    //fprintf(stderr, "\t-X count    client call handle cache max size\n");
-    //fprintf(stderr, "\t-Y count    server reply handle cache max size\n");
     fprintf(stderr, "\ndefault payload size is 24.\n");
 
 skip_prints:
@@ -748,6 +340,10 @@ skip_prints:
     exit(1);
 }
 
+/*
+ * forward prototype decls.
+ */
+static void *run_instance(void *arg);   /* run one instance */
 
 /*
  * main program.  usage:
@@ -757,10 +353,10 @@ skip_prints:
 int main(int argc, char **argv) {
     struct timeval tv;
     int ch, lcv, rv;
-    char *c;
     pthread_t *tarr;
     struct useprobe mainuse;
     char mytag[128];
+
     argv0 = argv[0];
 
     /* mpich says we should call this early as possible */
@@ -791,7 +387,7 @@ int main(int argc, char **argv) {
     g.maxrpcs_shm = DEF_MAXRPCS;
     g.timeout = DEF_TIMEOUT;
 
-    while ((ch = getopt(argc, argv, "B:b:c:d:i:l:M:m:p:qr:t:")) != -1) {
+    while ((ch = getopt(argc, argv, "B:b:c:d:i:M:m:p:qr:t:")) != -1) {
         switch (ch) {
             case 'B':
                 g.buftarg_net = atoi(optarg);
@@ -811,11 +407,7 @@ int main(int argc, char **argv) {
                 break;
             case 'i':
                 g.inreqsz = getsize(optarg);
-                if (g.inreqsz <= 24) usage("bad inreqsz (must be > 24)");
-                break;
-            case 'l':
-                g.limit = atoi(optarg);
-                if (g.limit < 1) usage("bad limit");
+                if (g.inreqsz <= 16) usage("bad inreqsz (must be > 16)");
                 break;
             case 'M':
                 g.maxrpcs_net = atoi(optarg);
@@ -852,11 +444,9 @@ int main(int argc, char **argv) {
     g.ninst = 1;
     g.hgproto = argv[0];
     g.hgsubnet = argv[1];
-    if (!g.limit)
-        g.limit = g.count;    /* max value */
     if (g.rflag) {
-        snprintf(g.tagsuffix, sizeof(g.tagsuffix), "-%d-%d-%d",
-                 g.count, g.limit, g.rflagval);
+        snprintf(g.tagsuffix, sizeof(g.tagsuffix), "-%d-%d",
+                 g.count, g.rflagval);
     }
 
     if (myrank == 0) {
@@ -867,10 +457,6 @@ int main(int argc, char **argv) {
         printf("\thgsubnet   = %s\n", g.hgsubnet);
         printf("\tbaseport   = %d\n", g.baseport);
         printf("\tcount      = %d\n", g.count);
-        if (g.limit == g.count)
-            printf("\tlimit      = <none>\n");
-        else
-            printf("\tlimit      = %d\n", g.limit);
         printf("\tquiet      = %d\n", g.quiet);
         if (g.rflag)
             printf("\tsuffix     = %s\n", g.tagsuffix);
@@ -882,27 +468,24 @@ int main(int argc, char **argv) {
                g.maxrpcs_shm);
         printf("\tdeliverqmx = %d\n", g.deliverq_max);
         printf("\tinput      = %d\n", (g.inreqsz == 0) ? 4 : g.inreqsz);
-        if (g.xcallcachemax)
-            printf("\tcallcache  = %d max\n", g.xcallcachemax);
-        if (g.yrespcachemax)
-            printf("\trespcache  = %d max\n", g.yrespcachemax);
         printf("\n");
     }
 
     signal(SIGALRM, sigalarm);
     alarm(g.timeout);
     if (myrank == 0) printf("main: starting ...\n");
+
     tarr = (pthread_t *)malloc(g.ninst * sizeof(pthread_t));
     if (!tarr) complain(1, 0, "malloc tarr thread array failed");
-    is = (struct is *)malloc(g.ninst *sizeof(*is));    /* array */
-    if (!is) complain(1, 0, "malloc 'is' instance state failed");
-    memset(is, 0, g.ninst * sizeof(*is));
+    isa = (struct is *)malloc(g.ninst *sizeof(*isa));    /* array */
+    if (!isa) complain(1, 0, "malloc 'isa' instance state failed");
+    memset(isa, 0, g.ninst * sizeof(*isa));
 
     /* fork off a thread for each instance */
     useprobe_start(&mainuse, RUSAGE_SELF);
     for (lcv = 0 ; lcv < g.ninst ; lcv++) {
-        is[lcv].n = lcv;
-        rv = pthread_create(&tarr[lcv], NULL, run_instance, (void*)&is[lcv]);
+        isa[lcv].n = lcv;
+        rv = pthread_create(&tarr[lcv], NULL, run_instance, (void*)&isa[lcv]);
         if (rv != 0)
             complain(1, 0, "pthread create failed %d", rv);
     }
@@ -913,6 +496,7 @@ int main(int argc, char **argv) {
         pthread_join(tarr[lcv], NULL);
     }
     useprobe_end(&mainuse);
+
     if (myrank == 0) printf("main: collection done.\n");
     snprintf(mytag, sizeof(mytag), "ALL%s", g.tagsuffix);
     useprobe_print(stdout, &mainuse, mytag, -1);
@@ -932,6 +516,24 @@ void *run_instance(void *arg) {
     struct is *isp = (struct is *)arg;
     int n = isp->n;               /* recover n from isp */
     nexus_ret_t nrv;
+
+    return(NULL);
+}
+
+#if 0
+/*
+ * OLD STUFF OLD STUFF OLD STUFF
+ */
+#include <assert.h>
+#include <errno.h>
+#include <inttypes.h>
+#include <sys/stat.h>
+
+/*
+ * run_instance: the main routine for running one instance of mercury.
+ * we pass the instance state struct in as the arg...
+ */
+void *run_instance(void *arg) {
 #if 0
     int lcv, rv;
     char *remoteurl;
@@ -1467,4 +1069,5 @@ static hg_return_t reply_sent_cb(const struct hg_cb_info *cbi) {
 
     return(HG_SUCCESS);
 }
+#endif
 #endif

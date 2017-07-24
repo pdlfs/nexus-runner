@@ -57,7 +57,7 @@
  * itself does not have any topology configuration command line flags,
  * it uses whatever it gets from the MPI launcher.
  *
- * the shuffler queue config controls how much buffering is used and 
+ * the shuffler queue config controls how much buffering is used and
  * how many RPCs can be active at one time.
  *
  * usage: nexus-runner [options] mercury-protocol subnet
@@ -80,7 +80,7 @@
  * -i size     input req size (> 24 if specified)
  *
  * the input reqs contain:
- * 
+ *
  *  <seq,xlen,src,dest><extra bytes...>
  *
  * (so 4*sizeof(int) == 16, assuming 32 bit ints).  the "-i" flag can
@@ -127,7 +127,7 @@ char *argv0;                     /* argv[0], program name */
 int myrank = 0;
 
 /*
- * vcomplain/complain about something.  if ret is non-zero we exit(ret) 
+ * vcomplain/complain about something.  if ret is non-zero we exit(ret)
  * after complaining.  if r0only is set, we only print if myrank == 0.
  */
 void vcomplain(int ret, int r0only, const char *format, va_list ap) {
@@ -300,7 +300,7 @@ void sigalarm(int foo) {
     fprintf(stderr, "SIGALRM detected (%d)\n", myrank);
     for (lcv = 0 ; lcv < g.ninst ; lcv++) {
         fprintf(stderr, "%d: %d: @alarm: ", myrank, lcv);
-        fprintf(stderr, "nsends=%d, ncallbacks=%d\n", 
+        fprintf(stderr, "nsends=%d, ncallbacks=%d\n",
                 isa[lcv].nsends, isa[lcv].ncallbacks);
     }
     fprintf(stderr, "Alarm clock\n");
@@ -374,9 +374,9 @@ int main(int argc, char **argv) {
 
     /* setup default to zero/null, except as noted below */
     memset(&g, 0, sizeof(g));
-    if (MPI_Comm_rank(MPI_COMM_WORLD, &myrank) != MPI_SUCCESS) 
+    if (MPI_Comm_rank(MPI_COMM_WORLD, &myrank) != MPI_SUCCESS)
         complain(1, 0, "unable to get MPI rank");
-    if (MPI_Comm_size(MPI_COMM_WORLD, &g.size) != MPI_SUCCESS) 
+    if (MPI_Comm_size(MPI_COMM_WORLD, &g.size) != MPI_SUCCESS)
         complain(1, 0, "unable to get MPI size");
     g.baseport = DEF_BASEPORT;
     g.buftarg_net = DEF_BUFTARGET;
@@ -516,7 +516,34 @@ void *run_instance(void *arg) {
     struct is *isp = (struct is *)arg;
     int n = isp->n;               /* recover n from isp */
     nexus_ret_t nrv;
+    int lcv;
 
+    printf("%d: instance running\n", myrank);
+    isa[n].n = n;    /* make it easy to map 'is' structure back to n */
+    isa[n].nxp = new nexus_ctx_t;   /* XXXCDC: need ctor to run */
+
+    /* XXXCDC: port stuff likely to go away */
+    nrv = nexus_bootstrap(isp->nxp, g.baseport, g.baseport+1000 /*XXX*/,
+                          g.hgsubnet, g.hgproto);
+    if (nrv != NX_SUCCESS)
+        complain(1, 0, "%d: nexus_bootstrap failed: %d", myrank, nrv);
+    printf("%d: nexus powered up!\n", myrank);
+
+    /* make a funcion name and register it in both HGs */
+    snprintf(isa[n].myfun, sizeof(isa[n].myfun), "f%d", n);
+
+    isa[n].shand = shuffler_init(isa[n].nxp, isa[n].myfun, g.maxrpcs_shm,
+                   g.buftarg_shm, g.maxrpcs_net, g.buftarg_net,
+                   g.deliverq_max, NULL/*XXXCDC CALLBACK */);
+
+#if 0
+    /* XXXCDC: need callback */
+    /*
+     * for lcv = 0 ; lcv < g.count ;lcv++
+     *   send data to a random end point
+     *
+     */
+#endif
     return(NULL);
 }
 
@@ -544,41 +571,6 @@ void *run_instance(void *arg) {
     struct callstate *cs;
     unsigned char data;
 #endif
-
-    printf("%d: instance running\n", myrank);
-    is[n].n = n;    /* make it easy to map 'is' structure back to n */
-    is[n].nxp = new nexus_ctx_t;   /* XXXCDC: need ctor to run */
-
-    /* XXXCDC: port stuff likely to go away */
-    nrv = nexus_bootstrap(isp->nxp, g.baseport, g.baseport+1000 /*XXX*/, 
-                          g.hgsubnet, g.hgproto);
-    if (nrv != NX_SUCCESS)
-        complain(1, 0, "%d: nexus_bootstrap failed: %d", myrank, nrv);
-
-    /* XXXCDC: nx should be opaque */
-    is[n].lhgclass = is[n].nxp->local_hgcl;
-    is[n].lhgctx = is[n].nxp->local_hgctx;
-    is[n].rhgclass = is[n].nxp->remote_hgcl;
-    is[n].rhgctx = is[n].nxp->remote_hgctx;
-
-    printf("%d: nexus powered up!\n", myrank);
-
-    /* make a funcion name and register it in both HGs */
-    snprintf(is[n].myfun, sizeof(is[n].myfun), "f%d", n);
-    is[n].mylrpcid = HG_Register_name(is[n].lhgclass, is[n].myfun,
-                                      hg_proc_rpcin_t, hg_proc_rpcout_t,
-                                      rpchandler);
-    /* we use registered data to pass instance to server callback */
-    if (HG_Register_data(is[n].lhgclass, is[n].mylrpcid,
-                         &is[n], NULL) != HG_SUCCESS)
-        complain(1, 0, "unable to register n as data");
-    is[n].myrrpcid = HG_Register_name(is[n].rhgclass, is[n].myfun,
-                                      hg_proc_rpcin_t, hg_proc_rpcout_t,
-                                      rpchandler);
-    /* we use registered data to pass instance to server callback */
-    if (HG_Register_data(is[n].rhgclass, is[n].myrrpcid,
-                         &is[n], NULL) != HG_SUCCESS)
-        complain(1, 0, "unable to register n as data");
 
 #if 0
     /* fork off network progress/trigger thread */

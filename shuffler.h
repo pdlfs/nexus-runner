@@ -149,7 +149,7 @@ shuffler_t shuffler_init(nexus_ctx_t *nxp, char *funname,
  * this is not end-to-end, it returns success once the message has
  * been queued for the next hop (the message data is copied into
  * the output queue, so the buffer passed in as an arg can be reused
- * when this function returns).   this is called by the main client 
+ * when this function returns).   this is called by the main client
  * thread.
  *
  * @param sh shuffler service handle
@@ -165,7 +165,7 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
 
 /*
  * shuffler_flush_delivery: flush the delivery queue.  this function
- * blocks until all requests currently in the delivery queues are 
+ * blocks until all requests currently in the delivery queues are
  * delivered.   We make no claims about requests that arrive after
  * the flush has been started.
  *
@@ -177,7 +177,7 @@ hg_return_t shuffler_flush_delivery(shuffler_t sh);
 /*
  * shuffler_flush_qs: flush either local or remote output queues.
  * this function blocks until all requests currently in the specified
- * output queues are delivered. We make no claims about requests that 
+ * output queues are delivered. We make no claims about requests that
  * arrive after the flush has been started.
  *
  * @param sh shuffler service handle

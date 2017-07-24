@@ -66,7 +66,7 @@
  *  - applications "send" a single request via the shuffler_send() API
  *  - shuffler "forwards" RPCs received from shuffler_rpchand() callback,
  *    each RPC contains a batch of one or more requests
- * 
+ *
  * write back buffering handled by allowing requests to complete when
  * placed in a queue.  if the queue is full, request go in a wait queue
  * and either the app is blocked ("send") or the RPC reply is delayed
@@ -88,7 +88,7 @@ static void *network_main(void *arg);
  * other prototypes
  */
 
-static bool append_req_to_locked_outqueue(struct outset *oset, 
+static bool append_req_to_locked_outqueue(struct outset *oset,
                                           struct outqueue *oq,
                                           struct request *req,
                                           struct request_queue *tosendq,
@@ -100,16 +100,16 @@ static void done_oq_flush(struct outqueue *oq);
 static void drop_curflush(struct shuffler *sh);
 static hg_return_t forw_cb(const struct hg_cb_info *cbi);
 static void forw_start_next(struct outqueue *oq, struct output *oput);
-static hg_return_t forward_reqs_now(struct request_queue *tosendq, 
+static hg_return_t forward_reqs_now(struct request_queue *tosendq,
                                     struct shuffler *sh, struct outset *oset,
                                     struct outqueue *oq);
 static int purge_reqs(struct shuffler *sh);
 static int purge_reqs_outset(struct shuffler *sh, int local);
-static hg_return_t req_parent_init(struct req_parent **parentp, 
-                                   struct request *req, hg_handle_t input, 
+static hg_return_t req_parent_init(struct req_parent **parentp,
+                                   struct request *req, hg_handle_t input,
                                    int32_t rpcin_seq);
-static hg_return_t req_to_self(struct shuffler *sh, struct request *req, 
-                               hg_handle_t input, int32_t in_seq, 
+static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
+                               hg_handle_t input, int32_t in_seq,
                                struct req_parent **parentp);
 static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
                                    struct outqueue *oq, struct request *req,
@@ -123,7 +123,7 @@ static hg_return_t shuffler_desthand_cb(const struct hg_cb_info *cbi);
 static hg_return_t shuffler_respond_cb(const struct hg_cb_info *cbi);
 static int start_threads(struct shuffler *sh);
 static void stop_threads(struct shuffler *sh);
-static int start_qflush(struct shuffler *sh, struct outset *oset, 
+static int start_qflush(struct shuffler *sh, struct outset *oset,
                         struct outqueue *oq);
 
 /*
@@ -132,8 +132,8 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
 
 static int32_t zero = 0;   /* for end of list marker */
 
-/* 
- * procheck: helper macro to reduce the verbage ... 
+/*
+ * procheck: helper macro to reduce the verbage ...
  */
 #define procheck(R,MSG) if ((R) != HG_SUCCESS) { \
     hg_log_write(HG_LOG_TYPE_ERROR, "HG", __FILE__, __LINE__, __func__, MSG); \
@@ -207,13 +207,13 @@ static hg_return_t hg_proc_rpcin_t(hg_proc_t proc, void *data) {
       free(rp);
       procheck(ret, "Proc decoder");
     }
- 
+
     /* got it!  put at the end of the decoded list */
     XSIMPLEQ_INSERT_TAIL(&struct_data->inreqs, rp, next);
   }
 
 done:
-  if ( ((op == HG_DECODE && ret != HG_SUCCESS) || op == HG_FREE) && 
+  if ( ((op == HG_DECODE && ret != HG_SUCCESS) || op == HG_FREE) &&
        XSIMPLEQ_FIRST(&struct_data->inreqs) != NULL) {
     XSIMPLEQ_FOREACH_SAFE(rp, &struct_data->inreqs, next, nrp) {
       free(rp);
@@ -249,13 +249,13 @@ done:
 /*
  * shuffler_outset_discard: free anything that was attached to an outset
  * (e.g. for error recovery, shutdown)
- * 
+ *
  * @param oset the outset to clean
  */
 static void shuffler_outset_discard(struct outset *oset) {
   std::map<hg_addr_t,struct outqueue *>::iterator oqit;
   struct outqueue *oq;
-  
+
   for (oqit = oset->oqs.begin() ; oqit != oset->oqs.end() ; oqit++) {
     oq = oqit->second;
     pthread_mutex_destroy(&oq->oqlock);
@@ -322,7 +322,7 @@ static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
   /* finally we add it to mercury */
   /* XXX: HG_Register_name can't fail? */
   /* XXX: no api to unregister an RPC other than shutting down mercury */
-  oset->rpcid = HG_Register_name(mcls, shuf->funname, 
+  oset->rpcid = HG_Register_name(mcls, shuf->funname,
                  hg_proc_rpcin_t, hg_proc_rpcout_t,  rpchand);
   if (HG_Register_data(mcls, oset->rpcid, oset, NULL) != HG_SUCCESS)
     goto err;
@@ -400,12 +400,12 @@ shuffler_t shuffler_init(nexus_ctx_t *nxp, char *funname,
     goto err;
   sh->disablesend = 0;
 
-  rv = shuffler_init_outset(&sh->localq, lmaxrpc, lbuftarget, sh, 
+  rv = shuffler_init_outset(&sh->localq, lmaxrpc, lbuftarget, sh,
           nxp->local_hgcl, nxp->local_hgctx, &nxp->laddrs, /* XXX: layering */
           shuffler_rpchand);
   if (rv < 0) goto err;
 
-  rv = shuffler_init_outset(&sh->remoteq, rmaxrpc, rbuftarget, sh, 
+  rv = shuffler_init_outset(&sh->remoteq, rmaxrpc, rbuftarget, sh,
           nxp->remote_hgcl, nxp->remote_hgctx, &nxp->gaddrs, /* XXX: layering */
           shuffler_rpchand);
   if (rv < 0) goto err;
@@ -440,7 +440,7 @@ shuffler_t shuffler_init(nexus_ctx_t *nxp, char *funname,
 
 err:
   shuffler_outset_discard(&sh->localq);     /* ensures maps are empty */
-  shuffler_outset_discard(&sh->remoteq);  
+  shuffler_outset_discard(&sh->remoteq);
   if (sh->funname) free(sh->funname);
   delete sh;
   return(NULL);
@@ -448,7 +448,7 @@ err:
 
 /*
  * start_threads: attempt to start our three worker threads
- * 
+ *
  * @param sh the shuffler we are starting
  * @return 0 on success, -1 on error
  */
@@ -465,7 +465,7 @@ static int start_threads(struct shuffler *sh) {
    sh->drunning = 1;
 
    /* start local na+sm thread */
-  rv = pthread_create(&sh->localq.ntask, NULL, 
+  rv = pthread_create(&sh->localq.ntask, NULL,
                       network_main, (void *)&sh->localq);
   if (rv != 0) {
      fprintf(stderr, "shuffler:start_threads: na+sm main failed\n");
@@ -475,7 +475,7 @@ static int start_threads(struct shuffler *sh) {
   sh->localq.nrunning = 1;
 
    /* start remote network thread */
-  rv = pthread_create(&sh->remoteq.ntask, NULL, 
+  rv = pthread_create(&sh->remoteq.ntask, NULL,
                       network_main, (void *)&sh->remoteq);
   if (rv != 0) {
      fprintf(stderr, "shuffler:start_threads: net main failed\n");
@@ -529,9 +529,9 @@ static void stop_threads(struct shuffler *sh) {
 }
 
 /*
- * purge_reqs: we've stopped the network and delivery so no more 
- * progress is going to be made.  look for reqs that are still in 
- * the system and clear them out.  return number of reqs we cleared 
+ * purge_reqs: we've stopped the network and delivery so no more
+ * progress is going to be made.  look for reqs that are still in
+ * the system and clear them out.  return number of reqs we cleared
  * (hopefully zero).
  *
  * @param sh the shuffler to purge
@@ -572,7 +572,7 @@ static int purge_reqs(struct shuffler *sh) {
  * purge_reqs_outset: helper function purge_reqs() that clears an outset.
  * the threads should have been stopped prior to running this (so we are
  * not expecting concurrent access while we are tearing this down).
- * 
+ *
  * @param sh the shuffler oset belongs to
  * @param local set to select localq, otherwise remoteq
  * @return the number of stranded reqs in the outset
@@ -617,18 +617,18 @@ static int purge_reqs_outset(struct shuffler *sh, int local) {
     /* and dump the requests in progress */
     while ((oput = XTAILQ_FIRST(&oq->outs)) != NULL) {
       XTAILQ_REMOVE(&oq->outs, oput, q);
-      /* 
+      /*
        * XXX: what to do with outhand.  should we cancel it?  threads
        * are not running.   seems like we hold a ref we should drop
        * at any rate.
        */
-      HG_Destroy(oput->outhand);   
+      HG_Destroy(oput->outhand);
       free(oput);
     }
   }
 
   oset->oqflushing = 0;
-  
+
   return(rv);
 }
 
@@ -654,11 +654,11 @@ static void *delivery_main(void *arg) {
       continue;
     }
 
-    /* 
-     * start first entry of the queue -- this may block, so unlock 
+    /*
+     * start first entry of the queue -- this may block, so unlock
      * to allow other threads to append to the queues.   note that
      * this is the only thread that dequeues reqs from deliverq, so
-     * it is safe to leave req at the front while we are running the 
+     * it is safe to leave req at the front while we are running the
      * callback...
      */
     req = sh->deliverq.front();
@@ -667,16 +667,16 @@ static void *delivery_main(void *arg) {
     pthread_mutex_unlock(&sh->deliverlock);
     sh->delivercb(req->src, req->dst, req->type, req->data, req->datalen);
     pthread_mutex_lock(&sh->deliverlock);
- 
+
     /* see if anyone is waiting for us to flush */
     if (sh->dflush_counter > 0) {
       sh->dflush_counter--;
       if (sh->dflush_counter == 0) {   /* droped to 0, wake up flusher */
-        if (sh->curflush) 
+        if (sh->curflush)
           pthread_cond_signal(&sh->curflush->flush_waitcv);
       }
     }
-    
+
     /* dispose of the req we just delivered */
     sh->deliverq.pop();
     if (req->owner)        /* should never happen */
@@ -693,16 +693,16 @@ static void *delivery_main(void *arg) {
     sh->dwaitq.pop();
     sh->deliverq.push(req);     /* deliverq should be full again */
 
-    /* 
+    /*
      * now we need to tell req's parent it can stop waiting.  since
      * we are holding the deliver lock (covers the dwaitq) we can
      * clear the owner to detach the req from the parent.   then
-     * we need to call parent_dref_stopwait() to drop the parent's 
+     * we need to call parent_dref_stopwait() to drop the parent's
      * reference counter.
      *
      * XXX: be safe and drop deliverlock when calling parent_dref_stopwait().
      * normally parent_dref_stopwait() will just drop the reference count and
-     * if it drops to zero it will call HG_Reply (if parent->input !NULL) 
+     * if it drops to zero it will call HG_Reply (if parent->input !NULL)
      * pthread_cond_signal (if parent->input == NULL).  the main worry
      * is HG_Reply() since that code is external to us and we can't
      * know what it (or any mercury NA layer under it) will do.
@@ -720,7 +720,7 @@ static void *delivery_main(void *arg) {
 }
 
 /*
- * parent_dref_stopwait: drop parent reference count and stop waiting 
+ * parent_dref_stopwait: drop parent reference count and stop waiting
  * if we've dropped the last reference
  *
  * @param sh our shuffler
@@ -750,17 +750,17 @@ static void parent_dref_stopwait(struct shuffler *sh, struct req_parent *parent,
 
 /*
  * parent_stopwait: we had a req on a waitq (i.e. a parent waiting on it)
- * and it finished.  we removed the req from the waitq and dropped the 
+ * and it finished.  we removed the req from the waitq and dropped the
  * ref count.   the ref count has dropped to zero, so we need to unblock
  * the parent and set it up for disposal.
  *
- * NOTE: caller must ensure that assume that nrefs is < 1  
+ * NOTE: caller must ensure that assume that nrefs is < 1
  *
  * @param sh our shuffler
  * @param parent waiting parent of request that is no longer waiting
  * @param abort cancels further processing of parent (e.g. for error handling)
  */
-static void parent_stopwait(struct shuffler *sh, struct req_parent *parent, 
+static void parent_stopwait(struct shuffler *sh, struct req_parent *parent,
                             int abort) {
   rpcout_t reply;
   hg_return_t rv;
@@ -771,9 +771,9 @@ static void parent_stopwait(struct shuffler *sh, struct req_parent *parent,
     return;
   }
 
-  /* 
+  /*
    * parent no longer has any active refs besides us, so no thread other
-   * than us can access it anymore (meaning it is safe to access it 
+   * than us can access it anymore (meaning it is safe to access it
    * without additional locking).
    */
 
@@ -786,8 +786,8 @@ static void parent_stopwait(struct shuffler *sh, struct req_parent *parent,
    * longer needs to wait.   we have two types of parents: the
    * application process or an input hg_handle_t.
    *
-   * if the parent is the application process (input==NULL), it is 
-   * waiting on parent->pcv and needs to be woken up (this can only 
+   * if the parent is the application process (input==NULL), it is
+   * waiting on parent->pcv and needs to be woken up (this can only
    * happen when sending with SRC == DST and the app is flow controlled).
    * the application will free the req_parent.
    */
@@ -800,9 +800,9 @@ static void parent_stopwait(struct shuffler *sh, struct req_parent *parent,
   }
 
   /*
-   * ok, the parent is a flow controlled hg_handle_t that we can 
-   * now respond to.   once we've stopped the wait, we can dispose 
-   * of the req_parent (we have the only reference to it now, so we 
+   * ok, the parent is a flow controlled hg_handle_t that we can
+   * now respond to.   once we've stopped the wait, we can dispose
+   * of the req_parent (we have the only reference to it now, so we
    * can just free it).
    */
   reply.seq = parent->rpcin_seq;
@@ -840,7 +840,7 @@ static hg_return_t shuffler_respond_cb(const struct hg_cb_info *cbi) {
   struct req_parent *parent = (struct req_parent *)cbi->arg;
 
   /*
-   * XXX: if we want to cache a list of free parent structures, 
+   * XXX: if we want to cache a list of free parent structures,
    * we could do it here...
    */
 
@@ -851,9 +851,9 @@ static hg_return_t shuffler_respond_cb(const struct hg_cb_info *cbi) {
 }
 
 /*
- * network_main: network support pthread.   need to call progress to 
- * push the network and then trigger to run the callback.  we do this 
- * all in one thread (meaning that we shouldn't block in the trigger 
+ * network_main: network support pthread.   need to call progress to
+ * push the network and then trigger to run the callback.  we do this
+ * all in one thread (meaning that we shouldn't block in the trigger
  * function, or we won't make progress)
  *
  * @param arg void* pointer to our outset
@@ -883,11 +883,11 @@ static void *network_main(void *arg) {
 /*
  * req_parent_init: helper function called when we need to attach a
  * req to an init'd req_parent structure.   if the structure is already
- * init'd, we just bump the req_parent's reference count and set the 
+ * init'd, we just bump the req_parent's reference count and set the
  * req's owner.   otherwise, we are starting a new req_parent.
- * this happens when we send a req on a full queue and need to wait 
- * on a waitq or on dwaitq.  it also happens when we recv an inbound 
- * RPC handle that contains a req that needs to wait on a waitq or on 
+ * this happens when we send a req on a full queue and need to wait
+ * on a waitq or on dwaitq.  it also happens when we recv an inbound
+ * RPC handle that contains a req that needs to wait on a waitq or on
  * dwaitq (e.g. before doing HG_Respond()).
  *
  * note: "parentp" is a pointer to a pointer.  if *parentp is NULL, we
@@ -899,8 +899,8 @@ static void *network_main(void *arg) {
  * @param rpcin_seq inbound seq# (only used if input != NULL)
  * @return status (normally success)
  */
-static hg_return_t req_parent_init(struct req_parent **parentp, 
-                                   struct request *req, hg_handle_t input, 
+static hg_return_t req_parent_init(struct req_parent **parentp,
+                                   struct request *req, hg_handle_t input,
                                    int32_t rpcin_seq) {
   struct req_parent *parent;
   int did_malloc = 0;
@@ -929,7 +929,7 @@ static hg_return_t req_parent_init(struct req_parent **parentp,
 
   /*
    * we only need pcv/pcvlock if we are in a shuffler_send() op.
-   * if input is !NULL, then we are working on responding to an 
+   * if input is !NULL, then we are working on responding to an
    * inbound RPC call...
    */
   if (input == NULL) {
@@ -946,8 +946,8 @@ static hg_return_t req_parent_init(struct req_parent **parentp,
   }
 
   /*
-   * we always set the initial value for nrefs to 2.  one for the 
-   * req we are adding, and one for our caller in order to hold 
+   * we always set the initial value for nrefs to 2.  one for the
+   * req we are adding, and one for our caller in order to hold
    * the req_parent in memory until we are completely done with it.
    * (want to avoid unlikely case where RPC completes before we
    * start waiting for the result..)
@@ -990,21 +990,21 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
   /* determine next hop */
   nexus = nexus_next_hop(sh->nxp, dst, &rank, &dstaddr);
 
-  /* 
+  /*
    * we always have to malloc and copy the data from the user to one
-   * of our buffers because we return to the sender before the is 
+   * of our buffers because we return to the sender before the is
    * complete (and we don't want to sender to reuse the buffer before
-   * we are done with it).  
+   * we are done with it).
    *
    * XXX: for output queues that have room, it would be nice if we
    * could directly copy into their hg_handle_t buffer as we receive
-   * new requests until the hg_handle_t is full and ready to be 
+   * new requests until the hg_handle_t is full and ready to be
    * send, but mercury doesn't give us an API to do that (we've got
    * HG_Forward() which takes an unpacked set of requests and packs
    * them all at once... there is no way to incrementally add data).
    */
   req = (struct request *) malloc(sizeof(*req) + datalen);
-  if (req == NULL) 
+  if (req == NULL)
     return(HG_NOMEM_ERROR);
 
   req->datalen = datalen;
@@ -1041,7 +1041,7 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
   oset = (nexus == NX_DESTREP) ? &sh->remoteq : &sh->localq;
   it = oset->oqs.find(dstaddr);
   if (it == oset->oqs.end()) {
-    /* 
+    /*
      * nexus knew the addr, but we couldn't find a a queue!
      * this should not happen!!!
      */
@@ -1059,28 +1059,28 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
 /*
  * req_to_self: sending/forward a req to ourself via the delivery thread.
  *
- * for apps sending (i.e. input==NULL, we are called via shuffler_send()) 
- * we will block if the delivery queue is full.  for blocking we'll use a 
+ * for apps sending (i.e. input==NULL, we are called via shuffler_send())
+ * we will block if the delivery queue is full.  for blocking we'll use a
  * req_parent's condvar provided by the caller to block.  the caller
  * typically allocates the req_parent on the stack.
  *
  * for reqs generated by the shuffler_rpchand() callback function
- * (input != NULL), if we get put on a wait queue we'll let 
+ * (input != NULL), if we get put on a wait queue we'll let
  * req_parent_init() malloc a req_parent to save the input handle
  * on until.   we'll hold the HG_Respond() call until all reqs in
- * the input batch have cleared the waitqs.  
+ * the input batch have cleared the waitqs.
  *
- * as noted in req_parent_init(), freshly malloc'd req_parent structures 
+ * as noted in req_parent_init(), freshly malloc'd req_parent structures
  * have their reference count set to 2 (one for the RPC and one for us
  * to hold the structure in memory until we've launched everything).
  *
- * all this blocking structure is in place to support write back 
+ * all this blocking structure is in place to support write back
  * buffering with flow control in all cases.
  *
  * rules: if input is NULL, then this is part of a "send" operation
- * and the caller provides a req_parent (typically stack allocated) 
- * in parentp.  otherwise, if input is not NULL then this is part of 
- * a "forward" operation and a req_parent is malloc'd on demand and 
+ * and the caller provides a req_parent (typically stack allocated)
+ * in parentp.  otherwise, if input is not NULL then this is part of
+ * a "forward" operation and a req_parent is malloc'd on demand and
  * placed in parentp.
  *
  * if this fails, we free the request (what else can we do?) which
@@ -1091,10 +1091,10 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
  * @param input the inbound handle that generated the req
  * @param in_seq the rcpin.seq value of the inbound req
  * @param parentp parent ptr (will allocate a new one if needed)
- * @return status 
+ * @return status
  */
 static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
-                               hg_handle_t input, int32_t in_seq, 
+                               hg_handle_t input, int32_t in_seq,
                                struct req_parent **parentp) {
   hg_return_t rv = HG_SUCCESS;
   int qsize, needwait;
@@ -1125,8 +1125,8 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
     }
 
   }
-  pthread_mutex_unlock(&sh->deliverlock);  
-  
+  pthread_mutex_unlock(&sh->deliverlock);
+
   /*
    * if we are sending (!input) and need to wait, we'll block here.
    */
@@ -1142,8 +1142,8 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
     pthread_mutex_unlock(&parent->pcvlock);
 
     /*
-     * we are done now, since the thread that woke us up also 
-     * should have pulled our req off the dwaitq and put it in 
+     * we are done now, since the thread that woke us up also
+     * should have pulled our req off the dwaitq and put it in
      * the delivery queue.
      */
 
@@ -1199,7 +1199,7 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
     if (rv == HG_SUCCESS) {
       oq->oqwaitq.push(req);      /* add req to oq's waitq */
     } else {
-      fprintf(stderr, "shuffler: req_via_mercury parent init failed (%d)\n", 
+      fprintf(stderr, "shuffler: req_via_mercury parent init failed (%d)\n",
               rv);
       free(req);                /* error means we can't send it */
       req = NULL;               /* to be safe */
@@ -1237,10 +1237,10 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
 }
 
 /*
- * append_req_to_locked_outqueue: append a req to a locked output 
+ * append_req_to_locked_outqueue: append a req to a locked output
  * queue.  this may result in a message that we need to forward
  * (e.g. if we fill a batch or if we are flushing).  we bump nsending
- * if this function returns a list of reqs to send.  note that 
+ * if this function returns a list of reqs to send.  note that
  * req is allowed to be NULL (e.g. if we just want to flush).
  *
  * @param oset the output set that our outq belongs to
@@ -1250,7 +1250,7 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
  * @param flushnow don't wait for buftarget bytes, flush now
  * @return true a list of requests to send is in "tosend"
  */
-static bool append_req_to_locked_outqueue(struct outset *oset, 
+static bool append_req_to_locked_outqueue(struct outset *oset,
                                           struct outqueue *oq,
                                           struct request *req,
                                           struct request_queue *tosend,
@@ -1289,12 +1289,12 @@ static bool append_req_to_locked_outqueue(struct outset *oset,
  * has already been bumped up (we'll bump it back down on error).
  *
  * @param tosend a list of reqs to send
- * @param sh shuffler we are sending with 
+ * @param sh shuffler we are sending with
  * @param oset the output queue set we are working with
  * @param oq the output queue we are sending on
  * @return status (hopefully success)
  */
-static hg_return_t forward_reqs_now(struct request_queue *tosend, 
+static hg_return_t forward_reqs_now(struct request_queue *tosend,
                                     struct shuffler *sh, struct outset *oset,
                                     struct outqueue *oq) {
   rpcin_t in;
@@ -1320,8 +1320,8 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
     }
   }
 
-  /* 
-   * if (oput != NULL) then we have a handle and we are on the outs list 
+  /*
+   * if (oput != NULL) then we have a handle and we are on the outs list
    *                   else no handle, not on the outs list
    */
 
@@ -1375,7 +1375,7 @@ static hg_return_t forw_cb(const struct hg_cb_info *cbi) {
     fprintf(stderr, "shuffle: may have lost data!\n");
   }
   hand = cbi->info.forward.handle;
-  
+
   if (hand && cbi->ret == HG_SUCCESS) {
     if (HG_Get_output(hand, &out) != HG_SUCCESS) {
       /* shouldn't ever happen, output is just 3 numbers */
@@ -1397,10 +1397,10 @@ static hg_return_t forw_cb(const struct hg_cb_info *cbi) {
 
 /*
  * forw_start_next: we have finished processing a handle (success
- * or failure) and need to destroy the handle, remove anything we 
- * sent from the queues, drop nsending, and then start anything on 
+ * or failure) and need to destroy the handle, remove anything we
+ * sent from the queues, drop nsending, and then start anything on
  * the waitq that can go.
- * 
+ *
  * @param oq the output queue we are working on
  * @param oput output we just sent (can be NULL if we had an error)
  */
@@ -1411,7 +1411,7 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
   struct request *req;
 
   /*
-   * get rid of handle if we've got one (XXX should we try and recycle 
+   * get rid of handle if we've got one (XXX should we try and recycle
    * it?  how much memory does caching handles cost us?)
    */
   if (oput && oput->outhand) {
@@ -1480,14 +1480,14 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
       }
 
     }
-     
+
     /* this bumps nsending back up if it returns a "tosend" list */
     tosend = append_req_to_locked_outqueue(oq->myset, oq, req, &tosendq, false);
   }
 
   /* if flushing, ensure our req got pushed out */
   if (flushloadingnow && !tosend) {
-    tosend = append_req_to_locked_outqueue(oq->myset, oq, NULL, 
+    tosend = append_req_to_locked_outqueue(oq->myset, oq, NULL,
                                            &tosendq, true);
   }
   pthread_mutex_unlock(&oq->oqlock);
@@ -1532,7 +1532,7 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
  * shuffler_rpchand: mercury callback when we recv an RPC.  we need to
  * unpack the requests in the batch and use nexus to forward them on
  * to their next hop.  we'll allocate a req_parent to own any req that
- * gets placed on a waitq.  being placed on a waitq will cause our 
+ * gets placed on a waitq.  being placed on a waitq will cause our
  * HG_Respond() to be delayed until everything clears the wait queue.
 
  *
@@ -1542,7 +1542,7 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
 static hg_return_t shuffler_rpchand(hg_handle_t handle) {
   const struct hg_info *hgi;
   struct outset *inoset, *outoset;
-  struct shuffler *sh; 
+  struct shuffler *sh;
   int islocal, rank;
   hg_return_t ret;
   rpcin_t in;
@@ -1624,7 +1624,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
     if ((nexus != NX_ISLOCAL && nexus != NX_DESTREP) ||
         (nexus == NX_ISLOCAL && islocal)             ||
         (nexus == NX_DESTREP && !islocal)) {
-      fprintf(stderr, "shuffler_rpchand: nexus panic!  code=%d, local=%d\n", 
+      fprintf(stderr, "shuffler_rpchand: nexus panic!  code=%d, local=%d\n",
               nexus, islocal);
       free(req);
       continue;
@@ -1653,11 +1653,11 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
   /*
    * if we malloc'd a req_parent via req_parent_init() [called in either
    * req_to_self or req_via_mercury], then we are holding an additional
-   * reference to the parent to keep it in place until we exit the 
+   * reference to the parent to keep it in place until we exit the
    * while loop above (req_parent_init set the inital value of nrefs to 2).
-   * now we can drop that extra reference, since we are all done 
+   * now we can drop that extra reference, since we are all done
    * processing.
-   * 
+   *
    * on the other hand, if we did not malloc a req_parent then the
    * RPC is done and we can respond right now.
    */
@@ -1748,16 +1748,16 @@ static hg_return_t aquire_flush(struct shuffler *sh, struct flush_op *fop,
   pthread_mutex_unlock(&sh->flushlock);
 
   /* make sure we are still running or we might block forever... */
-  if ((type == FLUSH_LOCALQ  && 
+  if ((type == FLUSH_LOCALQ  &&
         (sh->localq.nshutdown  != 0 || sh->localq.nrunning  == 0)) ||
-      (type == FLUSH_REMOTEQ && 
-        (sh->remoteq.nshutdown != 0 || sh->remoteq.nrunning == 0)) || 
+      (type == FLUSH_REMOTEQ &&
+        (sh->remoteq.nshutdown != 0 || sh->remoteq.nrunning == 0)) ||
       (type == FLUSH_DELIVER && (sh->dshutdown != 0 || sh->drunning == 0)) ) {
 
     drop_curflush(sh);
     rv = HG_CANCELED;
   }
-  
+
   return(rv);
 }
 
@@ -1804,7 +1804,7 @@ hg_return_t shuffler_flush_delivery(shuffler_t sh) {
   if (rv != HG_SUCCESS)
     return(rv);
 
-  /* 
+  /*
    * we now own the current flush operation, set counter and wait.
    * counter is dropped after we deliver a req with the callback
    * and will send us a cond_signal when it drops from 1 to zero.
@@ -1816,7 +1816,7 @@ hg_return_t shuffler_flush_delivery(shuffler_t sh) {
   }
   sh->dflush_counter = 0;
   pthread_mutex_unlock(&sh->deliverlock);
-  
+
   drop_curflush(sh);
 
   rv = (fop.status == FLUSHQ_CANCEL) ? HG_CANCELED : HG_SUCCESS;
@@ -1849,18 +1849,18 @@ hg_return_t shuffler_flush_qs(shuffler_t sh, int islocal) {
     return(rv);
   }
 
-  /* 
-   * we've aquired the flush, including setting oqflushing and 
+  /*
+   * we've aquired the flush, including setting oqflushing and
    * oqflush_counter both to 1.  (initing oqflush_counter to 1
-   * rather than 0 keeps the flush active while we are setting 
-   * it up -- we'll drop the extra reference before we block).  
+   * rather than 0 keeps the flush active while we are setting
+   * it up -- we'll drop the extra reference before we block).
    * now we need to look for output queues to be flushed. ...
    */
   for (it = oset->oqs.begin() ; it != oset->oqs.end() ; it++) {
     oq = it->second;
 
-    /* 
-     * if we start a queue flush on this queue, bump the counter 
+    /*
+     * if we start a queue flush on this queue, bump the counter
      * (keeping track of the number of outqueues being flushed).
      */
     if (start_qflush(sh, oset, oq)) {
@@ -1895,13 +1895,13 @@ hg_return_t shuffler_flush_qs(shuffler_t sh, int islocal) {
 
 /*
  * start_qflush: start flushing an output queue.  if the queue flush
- * is pending, we return 1.  otherwise 0.   flushing an output queue 
+ * is pending, we return 1.  otherwise 0.   flushing an output queue
  * is a multi-step process.  first we must wait for the waitq to drain.
  * second, if there are any pending buffered reqs in the loading list
  * waiting for enough data to build a batch then we need to stop waiting
  * and send them now.  third, we need to wait for all sending_outputs
  * on oq->outs at the time of the flush to finish.   depending on the
- * state of the queue we may be able to skip some or all of these 
+ * state of the queue we may be able to skip some or all of these
  * steps (e.g. if queue empty, then we're done!).
  *
  * @param sh the shuffler we are using
@@ -1909,7 +1909,7 @@ hg_return_t shuffler_flush_qs(shuffler_t sh, int islocal) {
  * @param oq the output queue to flush
  * @return 1 if flush is pending, otherwise zero
  */
-static int start_qflush(struct shuffler *sh, struct outset *oset, 
+static int start_qflush(struct shuffler *sh, struct outset *oset,
                         struct outqueue *oq) {
   int rv = 0;
   bool tosend;
@@ -1959,7 +1959,7 @@ done:
 
 /*
  * clean_qflush: clean out state of a flush that has been canceled.
- * we own the flush so it is safe to clear out oset once all the 
+ * we own the flush so it is safe to clear out oset once all the
  * output queues have been reset...
  *
  * @param sh the shuffler we are using
@@ -2031,7 +2031,7 @@ hg_return_t shuffler_shutdown(shuffler_t sh) {
 
   /* now free remaining structure */
   shuffler_outset_discard(&sh->localq);     /* ensures maps are empty */
-  shuffler_outset_discard(&sh->remoteq);  
+  shuffler_outset_discard(&sh->remoteq);
   if (sh->funname) free(sh->funname);
   pthread_mutex_destroy(&sh->deliverlock);
   pthread_cond_destroy(&sh->delivercv);

@@ -46,7 +46,7 @@ struct outset;                      /* forward decl, see below */
 
 /*
  * request: a structure to describe a single write request.
- * it has a fixed sized header (first four fields), and a 
+ * it has a fixed sized header (first four fields), and a
  * variable length data buffer.   we always allocate the header
  * and the data together.   data will be null if datalen == 0.
  */
@@ -59,9 +59,9 @@ struct request {
   void *data;                       /* request data */
 
   /* internal fields (not sent over the wire) */
-  /* 
+  /*
    * the owner is something (the application, a hg_handle_t) that
-   * has been flow controlled waiting for the request to be removed 
+   * has been flow controlled waiting for the request to be removed
    * a waitq.  owner can be NULL if nothing is waiting.  to change
    * a non-null owner or "next" linkage, lock the req's waitq.
    */
@@ -77,7 +77,7 @@ XSIMPLEQ_HEAD(request_queue, request);
 /*
  * rpcin_t: a batch of requests (top-level RPC request structure).
  * when we serialize this, we add a request with datalen/type=zero
- * to mark the end of the list (XXX: safer that trying to use 
+ * to mark the end of the list (XXX: safer that trying to use
  * hg_proc_get_size_left()?).
  */
 typedef struct {
@@ -96,18 +96,18 @@ typedef struct {
 
 /*
  * req_parent: a structure to describe the owner of a group of
- * one or more waiting requests.  the owner is either the main 
+ * one or more waiting requests.  the owner is either the main
  * application thread (via shuffler_send()) or it is an
- * hg_handle_t from an inbound rpc request.   we use this 
- * to track when all requests have been processed and the caller 
- * can continue or the rpc can be responded to (this is for flow 
+ * hg_handle_t from an inbound rpc request.   we use this
+ * to track when all requests have been processed and the caller
+ * can continue or the rpc can be responded to (this is for flow
  * control).
  *
- * "nrefs" atomically tracks the number of pending requests we are 
- * waiting on.  fields other than "nrefs" are only changed when there 
- * are no active references (either because we just allocated the 
- * req_parent or because we just released the last reference).   the 
- * exception is "ret" which can be set to something other than 
+ * "nrefs" atomically tracks the number of pending requests we are
+ * waiting on.  fields other than "nrefs" are only changed when there
+ * are no active references (either because we just allocated the
+ * req_parent or because we just released the last reference).   the
+ * exception is "ret" which can be set to something other than
  * HG_SUCCESS on an error to give a hint on what the problem was...
  */
 struct req_parent {
@@ -135,7 +135,7 @@ struct output {
   hg_handle_t outhand;              /* out handle used with HG_Forward() */
   XTAILQ_ENTRY(output) q;           /* linkage (locked by oqlock) */
 };
- 
+
 /*
  * sending_outputs: a list of outputs currently being sent
  */
@@ -143,7 +143,7 @@ XTAILQ_HEAD(sending_outputs, output);
 
 /*
  * outqueue: an output queue to a mercury endpoint (either na+sm or
- * network).  we append a request to "loading" each time we get an 
+ * network).  we append a request to "loading" each time we get an
  * output until we reach our target buffer size, then we send the batch.
  */
 struct outqueue {

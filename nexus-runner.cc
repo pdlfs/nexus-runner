@@ -64,6 +64,7 @@
  *
  * options:
  *  -c count     number of RPCs to perform
+ *  -l           loop through dsts rather than random sends
  *  -p baseport  base port number
  *  -q           quiet mode - don't print during RPCs
  *  -r n         enable tag suffix with this run number
@@ -264,6 +265,7 @@ struct gs {
     int buftarg_shm;         /* batch target for shared memory queues */
     int count;               /* number of msgs to send/recv in a run */
     int deliverq_max;        /* max# reqs in deliverq before waitq */
+    int loop;                /* loop through dsts rather than random sends */
     int maxrpcs_net;         /* max # outstanding RPCs, network */
     int maxrpcs_shm;         /* max # outstanding RPCs, shared memory */
     int quiet;               /* don't print so much */
@@ -324,6 +326,7 @@ static void usage(const char *msg) {
     fprintf(stderr, "usage: %s [options] mercury-protocol subnet\n", argv0);
     fprintf(stderr, "\noptions:\n");
     fprintf(stderr, "\t-c count    number of RPCs to perform\n");
+    fprintf(stderr, "\t-l          loop through dsts (no random sends)\n");
     fprintf(stderr, "\t-p port     base port number\n");
     fprintf(stderr, "\t-q          quiet mode\n");
     fprintf(stderr, "\t-r n        enable tag suffix with this run number\n");
@@ -394,7 +397,7 @@ int main(int argc, char **argv) {
     g.maxsndr = g.size - 1;      /* everyone sends by default */
     g.timeout = DEF_TIMEOUT;
 
-    while ((ch = getopt(argc, argv, "B:b:c:d:i:M:m:p:qr:s:t:")) != -1) {
+    while ((ch = getopt(argc, argv, "B:b:c:d:i:lM:m:p:qr:s:t:")) != -1) {
         switch (ch) {
             case 'B':
                 g.buftarg_net = atoi(optarg);
@@ -415,6 +418,9 @@ int main(int argc, char **argv) {
             case 'i':
                 g.inreqsz = getsize(optarg);
                 if (g.inreqsz <= 16) usage("bad inreqsz (must be > 16)");
+                break;
+            case 'l':
+                g.loop = 1;
                 break;
             case 'M':
                 g.maxrpcs_net = atoi(optarg);
@@ -469,6 +475,7 @@ int main(int argc, char **argv) {
         printf("\thgsubnet   = %s\n", g.hgsubnet);
         printf("\tbaseport   = %d\n", g.baseport);
         printf("\tcount      = %d\n", g.count);
+        printf("\tloop       = %d\n", g.loop);
         printf("\tquiet      = %d\n", g.quiet);
         if (g.rflag)
             printf("\tsuffix     = %s\n", g.tagsuffix);
@@ -553,7 +560,11 @@ void *run_instance(void *arg) {
 
     if (myrank <= g.maxsndr) {
         for (lcv = 0 ; lcv < g.count ; lcv++) {
-            sendto = random() % g.size;
+            if (g.loop) {
+                sendto = lcv % g.size;
+            } else {
+                sendto = random() % g.size;
+            }
             msg[0] = htonl(lcv);
             msg[1] = htonl(myrank);
             msg[2] = htonl(sendto);

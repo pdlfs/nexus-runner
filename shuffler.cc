@@ -1625,8 +1625,8 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
         (nexus == NX_ISLOCAL && islocal)             ||
         (nexus == NX_DESTREP && !islocal)) {
       fprintf(stderr, "shuffler_rpchand: nexus PANIC!  "
-                      "%d: %d->%d code=%d, l=%d\n",
-               sh->nxp->grank, req->src, req->dst, nexus, islocal);
+                      "%d: %d->%d len=%d code=%d, l=%d\n", sh->nxp->grank,
+                      req->src, req->dst, req->datalen, nexus, islocal);
       free(req);
       continue;
     }

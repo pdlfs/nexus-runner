@@ -67,6 +67,7 @@
  *  -p baseport  base port number
  *  -q           quiet mode - don't print during RPCs
  *  -r n         enable tag suffix with this run number
+ *  -s maxsndr   only ranks <= maxsndr send requests
  *  -t secs      timeout (alarm)
  *
  * shuffler queue config:
@@ -268,6 +269,7 @@ struct gs {
     int quiet;               /* don't print so much */
     int rflag;               /* -r tag suffix spec'd */
     int rflagval;            /* value for -r */
+    int maxsndr;             /* only ranks <= maxsndr send requests */
     int timeout;             /* alarm timeout */
     char tagsuffix[64];      /* tag suffix: ninst-count-mode-limit-run# */
 
@@ -325,6 +327,7 @@ static void usage(const char *msg) {
     fprintf(stderr, "\t-p port     base port number\n");
     fprintf(stderr, "\t-q          quiet mode\n");
     fprintf(stderr, "\t-r n        enable tag suffix with this run number\n");
+    fprintf(stderr, "\t-s maxsndr  only ranks <= maxsndr send requests\n");
     fprintf(stderr, "\t-t sec      timeout (alarm), in seconds\n");
     fprintf(stderr, "\nuse '-l 1' to serialize RPCs\n\n");
     fprintf(stderr, "shuffler queue config:\n");
@@ -388,9 +391,10 @@ int main(int argc, char **argv) {
     g.deliverq_max = DEF_DELIVERQMAX;
     g.maxrpcs_net = DEF_MAXRPCS;
     g.maxrpcs_shm = DEF_MAXRPCS;
+    g.maxsndr = g.size - 1;      /* everyone sends by default */
     g.timeout = DEF_TIMEOUT;
 
-    while ((ch = getopt(argc, argv, "B:b:c:d:i:M:m:p:qr:t:")) != -1) {
+    while ((ch = getopt(argc, argv, "B:b:c:d:i:M:m:p:qr:s:t:")) != -1) {
         switch (ch) {
             case 'B':
                 g.buftarg_net = atoi(optarg);
@@ -431,6 +435,11 @@ int main(int argc, char **argv) {
                 g.rflag++;  /* will gen tag suffix after args parsed */
                 g.rflagval = atoi(optarg);
                 break;
+            case 's':
+                g.maxsndr = atoi(optarg);
+                if (g.maxsndr < 0 || g.maxsndr >= g.size)
+                    usage("bad max sender");
+                break;
             case 't':
                 g.timeout = atoi(optarg);
                 if (g.timeout < 0) usage("bad timeout");
@@ -463,6 +472,7 @@ int main(int argc, char **argv) {
         printf("\tquiet      = %d\n", g.quiet);
         if (g.rflag)
             printf("\tsuffix     = %s\n", g.tagsuffix);
+        printf("\tmaxsndr    = %d\n", g.maxsndr);
         printf("\ttimeout    = %d\n", g.timeout);
         printf("sizes:\n");
         printf("\tbuftarget  = %d / %d (net/shm)\n", g.buftarg_net,
@@ -541,15 +551,18 @@ void *run_instance(void *arg) {
                    g.buftarg_shm, g.maxrpcs_net, g.buftarg_net,
                    g.deliverq_max, do_delivery);
 
-    for (lcv = 0 ; lcv < g.count ; lcv++) {
-        sendto = random() % g.size;
-        msg[0] = htonl(lcv);
-        msg[1] = htonl(myrank);
-        msg[2] = htonl(sendto);
-        /* vary type value by mod'ing lcv by 4 */
-        ret = shuffler_send(isa[n].shand, sendto, lcv % 4, msg, sizeof(msg));
-        if (ret != HG_SUCCESS)
-            fprintf(stderr, "shuffler_send failed(%d)\n", ret);
+    if (myrank <= g.maxsndr) {
+        for (lcv = 0 ; lcv < g.count ; lcv++) {
+            sendto = random() % g.size;
+            msg[0] = htonl(lcv);
+            msg[1] = htonl(myrank);
+            msg[2] = htonl(sendto);
+            /* vary type value by mod'ing lcv by 4 */
+            ret = shuffler_send(isa[n].shand, sendto, lcv % 4,
+                                msg, sizeof(msg));
+            if (ret != HG_SUCCESS)
+                fprintf(stderr, "shuffler_send failed(%d)\n", ret);
+        }
     }
 
     /* done sending */

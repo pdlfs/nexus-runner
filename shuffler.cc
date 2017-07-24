@@ -255,13 +255,14 @@ done:
 static void shuffler_outset_discard(struct outset *oset) {
   std::map<hg_addr_t,struct outqueue *>::iterator oqit;
   struct outqueue *oq;
-
-  oqit = oset->oqs.begin();
-  while (oqit != oset->oqs.end()) {
+  
+  for (oqit = oset->oqs.begin() ; oqit != oset->oqs.end() ; oqit++) {
     oq = oqit->second;
     pthread_mutex_destroy(&oq->oqlock);
     delete oq;
   }
+
+  oset->oqs.clear();
 }
 
 /*
@@ -511,7 +512,10 @@ static void stop_threads(struct shuffler *sh) {
 
   /* stop delivery */
   if (sh->drunning) {
+    pthread_mutex_lock(&sh->deliverlock);
     sh->dshutdown = 1;
+    pthread_cond_broadcast(&sh->delivercv);
+    pthread_mutex_unlock(&sh->deliverlock);
     pthread_join(sh->dtask, NULL);
     sh->dshutdown = 0;
   }

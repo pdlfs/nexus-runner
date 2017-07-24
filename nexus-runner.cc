@@ -106,6 +106,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <arpa/inet.h>
+
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -517,7 +519,9 @@ void *run_instance(void *arg) {
     struct is *isp = (struct is *)arg;
     int n = isp->n;               /* recover n from isp */
     nexus_ret_t nrv;
-    int lcv;
+    int lcv, sendto;
+    hg_return_t ret;
+    uint32_t msg[3];
 
     printf("%d: instance running\n", myrank);
     isa[n].n = n;    /* make it easy to map 'is' structure back to n */
@@ -537,13 +541,43 @@ void *run_instance(void *arg) {
                    g.buftarg_shm, g.maxrpcs_net, g.buftarg_net,
                    g.deliverq_max, do_delivery);
 
-#if 0
-    /* XXXCDC
-     * for lcv = 0 ; lcv < g.count ;lcv++
-     *   send data to a random end point
-     * barrier?
-     */
-#endif
+    for (lcv = 0 ; lcv < g.count ; lcv++) {
+        sendto = random() % g.size;
+        msg[0] = htonl(lcv);
+        msg[1] = htonl(myrank);
+        msg[2] = htonl(sendto);
+        /* vary type value by mod'ing lcv by 4 */
+        ret = shuffler_send(isa[n].shand, sendto, lcv % 4, msg, sizeof(msg));
+        if (ret != HG_SUCCESS)
+            fprintf(stderr, "shuffler_send failed(%d)\n", ret);
+    }
+
+    /* done sending */
+    printf("%d: sends complete!\n", myrank);
+    MPI_Barrier(MPI_COMM_WORLD);
+    printf("%d: crossed send barrier.\n", myrank);
+
+    /* flush it now */
+    ret = shuffler_flush_localqs(isa[n].shand);  /* clear out SRC->SRCREP */
+    if (ret != HG_SUCCESS)
+            fprintf(stderr, "shuffler_flush local failed(%d)\n", ret);
+    MPI_Barrier(MPI_COMM_WORLD);
+    ret = shuffler_flush_remoteqs(isa[n].shand); /* clear SRCREP->DSTREP */
+    if (ret != HG_SUCCESS)
+            fprintf(stderr, "shuffler_flush remote failed(%d)\n", ret);
+    MPI_Barrier(MPI_COMM_WORLD);
+    ret = shuffler_flush_localqs(isa[n].shand);  /* clear DSTREP->DST */
+    if (ret != HG_SUCCESS)
+            fprintf(stderr, "shuffler_flush local2 failed(%d)\n", ret);
+    MPI_Barrier(MPI_COMM_WORLD);
+    ret = shuffler_flush_delivery(isa[n].shand); /* clear deliverq */
+    if (ret != HG_SUCCESS)
+            fprintf(stderr, "shuffler_flush delivery failed(%d)\n", ret);
+
+    ret = shuffler_shutdown(isa[n].shand);
+    if (ret != HG_SUCCESS)
+            fprintf(stderr, "shuffler_flush shutdown failed(%d)\n", ret);
+
     return(NULL);
 }
 
@@ -557,4 +591,14 @@ void *run_instance(void *arg) {
  * @param datalen length of data buffer
  */
 static void do_delivery(int src, int dst, int type, void *d, int datalen) {
+    uint32_t msg[3];
+
+    if (datalen == sizeof(msg))
+        memcpy(msg, d, datalen);  /* just copy the data since it is small */
+    else
+        memset(msg, 0, sizeof(msg));
+
+    printf("%d: got msg %d->%d, t=%d, len=%d [%d %d %d]\n",
+           myrank, src, dst, type, datalen,
+           ntohl(msg[0]), ntohl(msg[1]), ntohl(msg[2]));
 }

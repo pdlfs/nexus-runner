@@ -967,12 +967,14 @@ static hg_return_t req_parent_init(struct req_parent **parentp,
 /*
  * shuffler_send: start the sending of a message via the shuffle.
  */
-int shuffler_send(shuffler_t sh, int dst, int type, void *d, int datalen) {
+hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
+                          void *d, int datalen) {
   nexus_ret_t nexus;
-  int rank, rv;
+  int rank;
   hg_addr_t dstaddr;
   struct request *req;
   struct req_parent parent_store, *parent;
+  hg_return_t rv;
   struct outset *oset;
   std::map<hg_addr_t, struct outqueue *>::iterator it;
   struct outqueue *oq;

@@ -159,7 +159,8 @@ shuffler_t shuffler_init(nexus_ctx_t *nxp, char *funname,
  * @param datalen length of data
  * @return status (success if we've queued the data)
  */
-int shuffler_send(shuffler_t sh, int dst, int type, void *d, int datalen);
+hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
+                          void *d, int datalen);
 
 
 /*

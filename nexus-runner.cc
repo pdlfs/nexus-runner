@@ -319,7 +319,7 @@ static void usage(const char *msg) {
     if (myrank) goto skip_prints;
 
     if (msg) fprintf(stderr, "%s: %s\n", argv0, msg);
-    fprintf(stderr, "usage: %s [options] mercury-protocol [subnet]\n", argv0);
+    fprintf(stderr, "usage: %s [options] mercury-protocol subnet\n", argv0);
     fprintf(stderr, "\noptions:\n");
     fprintf(stderr, "\t-c count    number of RPCs to perform\n");
     fprintf(stderr, "\t-p port     base port number\n");

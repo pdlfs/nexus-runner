@@ -555,28 +555,41 @@ void *run_instance(void *arg) {
     /* done sending */
     printf("%d: sends complete!\n", myrank);
     MPI_Barrier(MPI_COMM_WORLD);
-    printf("%d: crossed send barrier.\n", myrank);
+    if (myrank == 0)
+        printf("%d: crossed send barrier.\n", myrank);
 
     /* flush it now */
     ret = shuffler_flush_localqs(isa[n].shand);  /* clear out SRC->SRCREP */
     if (ret != HG_SUCCESS)
             fprintf(stderr, "shuffler_flush local failed(%d)\n", ret);
     MPI_Barrier(MPI_COMM_WORLD);
+    if (myrank == 0)
+        printf("%d: flushed local (hop1).\n", myrank);
+
     ret = shuffler_flush_remoteqs(isa[n].shand); /* clear SRCREP->DSTREP */
     if (ret != HG_SUCCESS)
             fprintf(stderr, "shuffler_flush remote failed(%d)\n", ret);
     MPI_Barrier(MPI_COMM_WORLD);
+    if (myrank == 0)
+        printf("%d: flushed remote (hop2).\n", myrank);
+
     ret = shuffler_flush_localqs(isa[n].shand);  /* clear DSTREP->DST */
     if (ret != HG_SUCCESS)
             fprintf(stderr, "shuffler_flush local2 failed(%d)\n", ret);
     MPI_Barrier(MPI_COMM_WORLD);
+    if (myrank == 0)
+        printf("%d: flushed local (hop3).\n", myrank);
+
     ret = shuffler_flush_delivery(isa[n].shand); /* clear deliverq */
     if (ret != HG_SUCCESS)
             fprintf(stderr, "shuffler_flush delivery failed(%d)\n", ret);
+    if (myrank == 0)
+        printf("%d: flushed delivery.\n", myrank);
 
     ret = shuffler_shutdown(isa[n].shand);
     if (ret != HG_SUCCESS)
             fprintf(stderr, "shuffler_flush shutdown failed(%d)\n", ret);
+    printf("%d: shutdown.\n", myrank);
 
     return(NULL);
 }

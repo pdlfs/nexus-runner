@@ -557,6 +557,8 @@ void *run_instance(void *arg) {
             msg[0] = htonl(lcv);
             msg[1] = htonl(myrank);
             msg[2] = htonl(sendto);
+            printf("%d: snd msg %d->%d, t=%d, lcv=%d\n",
+                   myrank, myrank, sendto, lcv % 4, lcv);
             /* vary type value by mod'ing lcv by 4 */
             ret = shuffler_send(isa[n].shand, sendto, lcv % 4,
                                 msg, sizeof(msg));

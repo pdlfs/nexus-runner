@@ -219,3 +219,30 @@ static hg_return_t shuffler_flush_remoteqs(shuffler_t sh) {
  */
 hg_return_t shuffler_shutdown(shuffler_t sh);
 
+
+/*
+ * shuffler_cfglog: setup logging before starting shuffler (for
+ * debugging).  call this before shuffler_init() so that everything
+ * can be properly logged... priority strings are: EMERG, ALERT, CRIT,
+ * ERR, WARN, NOTE, INFO, DBG, DBG0, DBG1, DBG2, DBG3.
+ * masks take the form: [facility1=]priority1,[facility2]=priority2,...
+ * facilities: CLNT (client), DLIV (delivery),  SHUF (general shuffler)
+ *
+ * @param max_xtra_rank ranks <= this get extra logging
+ * @param defpri default log priority
+ * @param stderrpri if msg is logged: print to stderr if at this priority
+ * @param mask log mask for non-xtra ranks
+ * @param xmask log mask for xtra ranks (default=use mask)
+ * @param logfile file to log to (we append the rank# to filename)
+ * @param alllogs if logfile, do on all ranks (not just xtra ones)
+ * @param msgbufsz size of in-memory message buffer, 0 disables
+ * @param stderrlog always print log msgs to stderr, ignore stderrmask
+ * @param xtra_stderlog as above, for extra ranks
+ * @return 0 on success, -1 on error
+ */
+int shuffler_cfglog(int max_xtra_rank, const char *defpri,
+                    const char *stderrpri, const char *mask,
+                    const char *xmask, const char *logfile,
+                    int alllogs, int msgbufsz, int stderrlog,
+                    int xtra_stderrlog);
+

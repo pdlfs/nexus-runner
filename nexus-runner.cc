@@ -89,6 +89,21 @@
  * be used to add additional un-used data to the payload if desired.
  * (this is the "xlen" --- number of extra bytes at end)
  *
+ * logging related options (rank <= max can have xtra logging, use -X):
+ *  -C mask      mask cfg for non-extra rank procs
+ *  -E mask      mask cfg for extra rank procs
+ *  -D priority  default log priority
+ *  -F logfile   logfile (rank # will be appended)
+ *  -I n         message buffer size (0=disable)
+ *  -L           enable logging
+ *  -O options   options (a=alllogs, s=stderr, x=xtra stderr)
+ *  -S priority  print to stderr priority
+ *  -X n         max extra rank#
+ *
+ * priorities are: ERR, WARN, NOTE, INFO, DBG, DBG0, DBG1, DBG2, DBG3
+ * facilities are: CLI (client), DLV (delivery), SHF (general shuffle)
+ * masks can be spec'd like: CLI=ERR,DLV=INFO,SHF=WARN
+ *
  * examples:
  *
  *   ./nexus-runner -c 50 -q cci+tcp 10.92
@@ -281,6 +296,19 @@ struct gs {
      * it must be >= 40 to account for the header (we pad the rest).
      */
     int inreqsz;             /* input request size */
+
+    /* logging */
+    int lenable;             /* enable logging */
+    char *cmask;             /* mask cfg for non-extra rank procs */
+    char *emask;             /* mask cfg for extra ranks */
+    const char *defpri;      /* default priority */
+    char *logfile;           /* logfile */
+    int msgbufsz;            /* msgbuffer size */
+    int o_alllogs;           /* if logfile, create on non-extra ranks */
+    int o_stderr;            /* always log to stderr (non extra ranks) */
+    int o_xstderr;           /* always log to stderr (xtra ranks) */
+    const char *serrpri;     /* stderr priority */
+    int max_xtra;            /* max extra rank# */
 } g;
 
 /*
@@ -341,7 +369,18 @@ static void usage(const char *msg) {
     fprintf(stderr, "\t-m count    maxrpcs for shm output queues\n");
     fprintf(stderr, "\nsize related options:\n");
     fprintf(stderr, "\t-i size     input req size (>= 24 if specified)\n");
-    fprintf(stderr, "\ndefault payload size is 24.\n");
+    fprintf(stderr, "\ndefault payload size is 24.\n\n");
+    fprintf(stderr,
+     "logging related options (rank <= max can have xtra logging, use -X):\n");
+    fprintf(stderr, "\t-C mask      mask cfg for non-extra rank procs\n");
+    fprintf(stderr, "\t-E mask      mask cfg for extra rank procs\n");
+    fprintf(stderr, "\t-D priority  default log priority\n");
+    fprintf(stderr, "\t-F logfile   logfile (rank # will be appended)\n");
+    fprintf(stderr, "\t-I n         message buffer size (0=disable)\n");
+    fprintf(stderr, "\t-L           enable logging\n");
+    fprintf(stderr, "\t-O options   opts (a=alllogs,s=stderr,x=xtra stderr)\n");
+    fprintf(stderr, "\t-S priority  print to stderr priority\n");
+    fprintf(stderr, "\t-X n         max extra rank#\n");
 
 skip_prints:
     MPI_Finalize();
@@ -397,7 +436,12 @@ int main(int argc, char **argv) {
     g.maxsndr = g.size - 1;      /* everyone sends by default */
     g.timeout = DEF_TIMEOUT;
 
-    while ((ch = getopt(argc, argv, "B:b:c:d:i:lM:m:p:qr:s:t:")) != -1) {
+    g.defpri = "WARN";
+    g.serrpri = "CRIT";
+    g.max_xtra = g.size;
+
+    while ((ch = getopt(argc, argv,
+            "B:b:C:c:D:d:E:F:I:i:LlM:m:O:p:qr:S:s:t:X:")) != -1) {
         switch (ch) {
             case 'B':
                 g.buftarg_net = atoi(optarg);
@@ -407,17 +451,36 @@ int main(int argc, char **argv) {
                 g.buftarg_shm = atoi(optarg);
                 if (g.buftarg_shm < 1) usage("bad buftarget shm");
                 break;
+            case 'C':
+                g.cmask = optarg;
+                break;
             case 'c':
                 g.count = atoi(optarg);
                 if (g.count < 1) usage("bad count");
+                break;
+            case 'D':
+                g.defpri = optarg;
                 break;
             case 'd':
                 g.deliverq_max = atoi(optarg);
                 if (g.deliverq_max < 1) usage("bad deliverq_max shm");
                 break;
+            case 'E':
+                g.emask = optarg;
+                break;
+            case 'F':
+                g.logfile = optarg;
+                break;
+            case 'I':
+                g.msgbufsz = getsize(optarg);
+                if (g.msgbufsz < 0) usage("bad msgbuf size");
+                break;
             case 'i':
                 g.inreqsz = getsize(optarg);
                 if (g.inreqsz <= 16) usage("bad inreqsz (must be > 16)");
+                break;
+            case 'L':
+                g.lenable = 1;
                 break;
             case 'l':
                 g.loop = 1;
@@ -430,6 +493,11 @@ int main(int argc, char **argv) {
                 g.maxrpcs_shm = atoi(optarg);
                 if (g.maxrpcs_shm < 1) usage("bad maxrpc shm");
                 break;
+            case 'O':
+                g.o_alllogs = (strchr(optarg, 'a') != NULL);
+                g.o_stderr =  (strchr(optarg, 's') != NULL);
+                g.o_xstderr = (strchr(optarg, 'x') != NULL);
+                break;
             case 'p':
                 g.baseport = atoi(optarg);
                 if (g.baseport < 1) usage("bad port");
@@ -441,6 +509,9 @@ int main(int argc, char **argv) {
                 g.rflag++;  /* will gen tag suffix after args parsed */
                 g.rflagval = atoi(optarg);
                 break;
+            case 'S':
+                g.serrpri = optarg;
+                break;
             case 's':
                 g.maxsndr = atoi(optarg);
                 if (g.maxsndr < 0 || g.maxsndr >= g.size)
@@ -449,6 +520,9 @@ int main(int argc, char **argv) {
             case 't':
                 g.timeout = atoi(optarg);
                 if (g.timeout < 0) usage("bad timeout");
+                break;
+            case 'X':
+                g.max_xtra = atoi(optarg);
                 break;
             default:
                 usage(NULL);
@@ -488,7 +562,39 @@ int main(int argc, char **argv) {
                g.maxrpcs_shm);
         printf("\tdeliverqmx = %d\n", g.deliverq_max);
         printf("\tinput      = %d\n", (g.inreqsz == 0) ? 4 : g.inreqsz);
+        if (!g.lenable) {
+            printf("\tlogging    = disabled\n");
+        } else {
+            printf("\tlogging    = enabled\n");
+            printf("\tmax_xtra   = %d\n", g.max_xtra);
+            printf("\tdefpri     = %s\n", g.defpri);
+            printf("\tstderrpri  = %s\n", g.serrpri);
+            printf("\tmsgbufsize = %d\n", g.msgbufsz);
+            if (g.logfile)
+                printf("\tlogfile    = %s\n", g.logfile);
+            if (g.cmask)
+                printf("\tcmask      = %s\n", g.cmask);
+            if (g.emask)
+                printf("\temask      = %s\n", g.emask);
+            if (g.o_alllogs)
+                printf("\talllogs    = on\n");
+            if (g.o_stderr)
+                printf("\tostderr    = on\n");
+            if (g.o_xstderr)
+                printf("\toxstderr   = on\n");
+        }
         printf("\n");
+    }
+
+    /* plug in the log options */
+    if (g.lenable) {
+        rv = shuffler_cfglog(g.max_xtra, g.defpri, g.serrpri, g.cmask,
+                             g.emask, g.logfile, g.o_alllogs, g.msgbufsz,
+                             g.o_stderr, g.o_xstderr);
+        if (rv < 0) {
+            fprintf(stderr, "shuffler_cfglog failed!\n");
+            exit(-1);
+        }
     }
 
     signal(SIGALRM, sigalarm);

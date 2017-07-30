@@ -74,6 +74,152 @@
  */
 
 /*
+ * start of logging init stuff
+ */
+#include "shuf_mlog.h"
+
+static struct shufcfglog {
+  int on;                  /* set if enabled */
+  int max_xtra_rank;       /* rank <= max_xtra_rank: enable xtra logging */
+  int defpri;              /* default priority for the rest */
+  int stderrpri;           /* stderr priority for everyone else */
+  char *mask;              /* mask for non-xtra ranks */
+  char *xmask;             /* mask xtra logging ranks (defaut=mask) */
+  char *logfile;           /* logfile name (if enabled), we append rank */
+  int alllogs;             /* if logfile, do on all ranks, not just xtra */
+  int lfbaselen;           /* strlen() of the log file base */
+  int msgbufsz;            /* message buf size */
+  int stderrlog;           /* always log to stderr for other ranks */
+  int xtra_stderrlog;      /* always log to stderr for xtra log ranks */
+} shufcfg = { 0 };
+
+/*
+ * shuffler_cfglog: setup logging before starting shuffler.  call
+ * this before shuffler_init() so that everything can be properly
+ * logged...
+ */
+int shuffler_cfglog(int max_xtra_rank, const char *defpri,
+                    const char *stderrpri, const char *mask,
+                    const char *xmask, const char *logfile,
+                    int alllogs, int msgbufsz, int stderrlog,
+                    int xtra_stderrlog) {
+  char *tmpbuf;
+
+  shufcfg.max_xtra_rank = max_xtra_rank;
+
+  shufcfg.defpri = (defpri) ? shuf::mlog_str2pri(defpri) : MLOG_WARN;
+  if (shufcfg.defpri == -1) {
+    fprintf(stderr, "shuffler_cfglog: bad defpri %s\n", defpri);
+    return(-1);
+  }
+
+  shufcfg.stderrpri = (stderrpri) ?
+                        shuf::mlog_str2pri(stderrpri) : MLOG_WARN;
+  if (shufcfg.stderrpri == -1) {
+    fprintf(stderr, "shuffler_cfglog: bad stderrpri %s\n", stderrpri);
+    goto err;
+  }
+
+  shufcfg.mask = (mask) ? strdup(mask) : NULL;
+  if (mask && !shufcfg.mask) {
+    fprintf(stderr, "shuffler_cfglog: mask malloc failed\n");
+    goto err;
+  }
+
+  shufcfg.xmask = (xmask) ? strdup(xmask) : NULL;
+  if (xmask && !shufcfg.xmask) {
+    fprintf(stderr, "shuffler_cfglog: xmask malloc failed\n");
+    goto err;
+  }
+
+  if (logfile) {
+    shufcfg.lfbaselen = strlen(logfile);
+    tmpbuf = (char *)calloc(shufcfg.lfbaselen + 16, 1);   /* zero fills */
+    if (tmpbuf == NULL) {
+      fprintf(stderr, "shuffler_cfglog: malloc tmpbuf failed?\n");
+      goto err;
+    }
+    shufcfg.logfile = tmpbuf;  /* we'll add the rank later */
+    memcpy(tmpbuf, logfile, shufcfg.lfbaselen);
+  }
+  shufcfg.alllogs = alllogs;
+  shufcfg.msgbufsz = msgbufsz;
+  shufcfg.stderrlog = stderrlog;
+  shufcfg.xtra_stderrlog = xtra_stderrlog;
+
+  shufcfg.on = 1;
+  return(0);
+
+err:
+  if (shufcfg.mask) free(shufcfg.mask);
+  if (shufcfg.xmask) free(shufcfg.xmask);
+  if (shufcfg.logfile) free(shufcfg.logfile);
+  return(-1);
+}
+
+/*
+ * shuffler_openlog: start the log
+ *
+ * @param myrank the current process' rank
+ */
+static void shuffler_openlog(int myrank) {
+  int stderrlog, am_xtra, rv;
+  char *lfile, *usemask;
+
+  if (shufcfg.on == 0)
+    return;
+  am_xtra = (myrank <= shufcfg.max_xtra_rank);
+  if (am_xtra) {
+    stderrlog = (shufcfg.xtra_stderrlog) ? MLOG_STDERR : 0;
+  } else {
+    stderrlog = (shufcfg.stderrlog) ? MLOG_STDERR : 0;
+  }
+
+  if (shufcfg.logfile) {  /* append rank to logfilename */
+    snprintf(shufcfg.logfile+shufcfg.lfbaselen, 16, ".%d", myrank);
+    lfile = (am_xtra || shufcfg.alllogs) ? shufcfg.logfile : NULL;
+  }
+
+  rv = shuf::mlog_open("shuf", 3, shufcfg.defpri, shufcfg.stderrpri,
+                       lfile, shufcfg.msgbufsz, stderrlog|MLOG_LOGPID, 0);
+  if (rv < 0) {
+    fprintf(stderr, "shuffler_openlog: failed!  log disabled\n");
+    goto done;
+  }
+
+  if (shuf::mlog_namefacility(0, "SHUF", NULL) < 0 ||
+      shuf::mlog_namefacility(1, "CLNT", NULL) < 0 ||
+      shuf::mlog_namefacility(2, "DLIV", NULL) < 0) {
+    fprintf(stderr, "shuffler_namefac: failed!  log disabled\n");
+    goto done;
+  }
+
+  usemask = shufcfg.mask;
+  if (am_xtra && shufcfg.xmask != NULL)
+    usemask = shufcfg.xmask;
+  if (usemask)
+    shuf::mlog_setmasks(usemask, -1);  /* ignore errors */
+
+done:
+  if (shufcfg.logfile) free(shufcfg.logfile);
+  if (shufcfg.mask) free(shufcfg.mask);
+  if (shufcfg.xmask) free(shufcfg.xmask);
+  shufcfg.logfile = shufcfg.mask = shufcfg.xmask = NULL;
+}
+
+/*
+ * shuffler_closelog: end the log
+ */
+static void shuffler_closelog() {
+  if (shufcfg.on)
+    shuf::mlog_close();
+}
+
+/*
+ * end of logging init stuff
+ */
+
+/*
  * RPC handler registered with mercury
  */
 static hg_return_t shuffler_rpchand(hg_handle_t handle);
@@ -393,6 +539,8 @@ shuffler_t shuffler_init(nexus_ctx_t *nxp, char *funname,
   shuffler_t sh;
   int rv;
 
+  shuffler_openlog(nxp->grank);  /* XXXCCDC: layering */
+
   sh = new shuffler;    /* aborts w/std::bad_alloc on failure */
   sh->nxp = nxp;
   sh->funname = strdup(funname);
@@ -443,6 +591,7 @@ err:
   shuffler_outset_discard(&sh->remoteq);
   if (sh->funname) free(sh->funname);
   delete sh;
+  shuffler_closelog();
   return(NULL);
 }
 
@@ -1184,7 +1333,7 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
 
   pthread_mutex_lock(&oq->oqlock);
   needwait = (oq->nsending >= oset->maxrpc);
-  tosend = NULL;
+  tosend = false;
 
   if (!needwait) {
 
@@ -2038,6 +2187,7 @@ hg_return_t shuffler_shutdown(shuffler_t sh) {
   pthread_cond_destroy(&sh->delivercv);
   pthread_mutex_destroy(&sh->flushlock);
   delete sh;
+  shuffler_closelog();
 
   return(HG_SUCCESS);
 }

@@ -180,16 +180,16 @@ static void shuffler_openlog(int myrank) {
     lfile = (am_xtra || shufcfg.alllogs) ? shufcfg.logfile : NULL;
   }
 
-  rv = shuf::mlog_open("shuf", 3, shufcfg.defpri, shufcfg.stderrpri,
+  rv = shuf::mlog_open("shuf", SHUF_MAXFAC, shufcfg.defpri, shufcfg.stderrpri,
                        lfile, shufcfg.msgbufsz, stderrlog|MLOG_LOGPID, 0);
   if (rv < 0) {
     fprintf(stderr, "shuffler_openlog: failed!  log disabled\n");
     goto done;
   }
 
-  if (shuf::mlog_namefacility(0, "SHUF", NULL) < 0 ||
-      shuf::mlog_namefacility(1, "CLNT", NULL) < 0 ||
-      shuf::mlog_namefacility(2, "DLIV", NULL) < 0) {
+  if (shuf::mlog_namefacility(SHUF_MLOG, "SHUF", NULL) < 0 ||
+      shuf::mlog_namefacility(CLNT_MLOG, "CLNT", NULL) < 0 ||
+      shuf::mlog_namefacility(DLIV_MLOG, "DLIV", NULL) < 0) {
     fprintf(stderr, "shuffler_namefac: failed!  log disabled\n");
     goto done;
   }

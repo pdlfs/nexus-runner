@@ -1413,8 +1413,8 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
   struct request_queue tosendq;
   struct req_parent *parent;
 
-  mlog(SHUF_CALL, "req_via_mercury: req=%p local=%d dstaddr=%p", req,
-       oset == &sh->localq, oq->dst);
+  mlog(SHUF_CALL, "req_via_mercury: req=%p local=%d rnk=[%d.%d] dst=%p", req,
+       oset == &sh->localq, oq->grank, oq->subrank, oq->dst);
 
   pthread_mutex_lock(&oq->oqlock);
   needwait = (oq->nsending >= oset->maxrpc);
@@ -1568,8 +1568,8 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
       pthread_mutex_unlock(&oq->oqlock);
     }
   }
-  mlog(SHUF_CALL, "forward_now: output=%p dst=%p hand=%p",
-       oput, oq->dst, oput->outhand);
+  mlog(SHUF_CALL, "forward_now: output=%p rnk=[%d.%d] dst=%p hand=%p",
+       oput, oq->grank, oq->subrank, oq->dst, oput->outhand);
 
   /*
    * if (oput != NULL) then we have a handle and we are on the outs list
@@ -1664,7 +1664,8 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
   struct req_parent *fq, **fq_end, *parent, *nparent;
   struct request *req;
 
-  mlog(SHUF_CALL, "forw_start_next: dst=%p, oput=%p", oq->dst, oput);
+  mlog(SHUF_CALL, "forw_start_next: to=[%d.%d] dst=%p, oput=%p",
+       oq->grank, oq->subrank, oq->dst, oput);
 
   /*
    * get rid of handle if we've got one (XXX should we try and recycle
@@ -1931,7 +1932,8 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
 
     oq = it->second;    /* now we have the correct output queue */
 
-    mlog(SHUF_D1, "rpchand: req=%p via mercury", req);
+    mlog(SHUF_D1, "rpchand: req=%p via mercury [%d.%d] oq=%p", req,
+         oq->grank, oq->subrank, oq);
     ret = req_via_mercury(sh, outoset, oq, req, handle, in.seq, &parent);
 
   }
@@ -2185,6 +2187,7 @@ hg_return_t shuffler_flush_qs(shuffler_t sh, int islocal) {
     pthread_cond_wait(&fop.flush_waitcv, &sh->flushlock);  /* BLOCK HERE */
   }
   pthread_mutex_unlock(&sh->flushlock);
+  mlog(CLNT_D1, "shuffler_flush_qs: wait done!");
 
   /*
    * done!   drop the flush and return...
@@ -2219,7 +2222,8 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
   int rv = 0;
   bool tosend;
   struct request_queue tosendq;
-  mlog(UTIL_CALL, "start_qflush: oset=%p, oq=%p", oset, oq);
+  mlog(UTIL_CALL, "start_qflush: oset=%p, oq=%p rnk=[%d.%d]", oset, oq,
+       oq->grank, oq->subrank);
 
   pthread_mutex_lock(&oq->oqlock);
 
@@ -2266,7 +2270,7 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
 
 done:
   pthread_mutex_unlock(&oq->oqlock);
-  mlog(UTIL_D1, "start_qflush: oset=%p, oq=%p, return=%d", oset, oq, rv);
+  mlog(UTIL_D1, "start_qflush: oset=%p, oq=%p, flushpending=%d", oset, oq, rv);
   return(rv);
 }
 
@@ -2314,6 +2318,7 @@ static void done_oq_flush(struct outqueue *oq) {
 
   /* signal main flusher if we dropped the last reference */
   if (r == 0) {
+    mlog(UTIL_CALL, "done_oq_flush: dropped last oq ref, flush done!");
     pthread_mutex_lock(&sh->flushlock);  /* protects oqflushing */
     oset->oqflushing = 0;
     pthread_cond_broadcast(&sh->curflush->flush_waitcv);

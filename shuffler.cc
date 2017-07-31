@@ -1800,6 +1800,7 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
     done_oq_flush(oq);
   }
 
+  mlog(SHUF_D1, "forw_start_next: done!");
 }
 
 /*
@@ -2238,7 +2239,7 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
     oq->oqflush_output = NULL;   /* to be safe */
     oq->oqflushing = 1;
     rv = 1;
-    mlog(UTIL_D1, "start_qflush: oset=%p, oq=%p, waitqcnt=%d",
+    mlog(UTIL_D1, "start_qflush: WAITQ: oset=%p, oq=%p, waitqcnt=%d",
          oset, oq, oq->oqflush_waitcounter);
     goto done;
   }
@@ -2248,7 +2249,7 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
 
   /* send?  drop oq lock to be safe since we are calling out to mercury */
   if (tosend) {
-    mlog(UTIL_D1, "start_qflush: oset=%p, oq=%p, loading flushed output",
+    mlog(UTIL_D1, "start_qflush: LOADING FLUSH: oset=%p, oq=%p",
          oset, oq);
     pthread_mutex_unlock(&oq->oqlock);
     if (forward_reqs_now(&tosendq, sh, oset, oq) != HG_SUCCESS) {
@@ -2264,7 +2265,7 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
     oq->oqflush_output = XTAILQ_LAST(&oq->outs, sending_outputs);
     oq->oqflushing = 1;
     rv = 1;
-    mlog(UTIL_D1, "start_qflush: oset=%p, oq=%p, waitfor=%p",
+    mlog(UTIL_D1, "start_qflush: SENDERS: oset=%p, oq=%p, waitfor=%p",
          oset, oq, oq->oqflush_output);
   }
 

@@ -151,6 +151,10 @@ struct outqueue {
   struct outset *myset;             /* output set that owns this queue */
   hg_addr_t dst;                    /* who we send to (nexus owns this) */
 
+  /* the next two are cached from nexus for debug output */
+  int grank;                        /* global rank of endpoint */
+  int subrank;                      /* local rank or node number */
+
   pthread_mutex_t oqlock;           /* output queue lock */
   struct request_queue loading;     /* list of requests we are loading */
   int loadsize;                     /* size of loading, send when buftarget */

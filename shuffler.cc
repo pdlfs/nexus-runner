@@ -439,12 +439,13 @@ static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
                                 shuffler_t shuf, hg_class_t *mcls,
                                 hg_context_t *mctx, nexus_map_t *nmap,
                                 hg_rpc_cb_t rpchand) {
+  int islocal;
   std::map<int,hg_addr_t>::iterator nmit;
   hg_addr_t ha;
   struct outqueue *oq;
 
-  mlog(UTIL_CALL, "shuffler_init_outset %s",
-       (oset == &shuf->localq) ? "local" : "remote");
+  islocal = (oset == &shuf->localq);
+  mlog(UTIL_CALL, "shuffler_init_outset local=%d", islocal);
 
   oset->maxrpc = maxrpc;
   oset->buftarget = buftarget;
@@ -460,11 +461,14 @@ static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
 
   /* now populate the oqs */
   for (nmit = nmap->begin() ; nmit != nmap->end() ; nmit++) {
-    ha = nmit->second;
+    ha = nmit->second;           /* XXX: layering */
     oq = new struct outqueue;
     if (!oq) goto err;
     oq->myset = oset;
     oq->dst = ha;         /* shared with nexus, nexus owns it */
+    oq->subrank = nmit->first;   /* XXX: layering */
+    oq->grank = (islocal) ? shuf->nxp->local2global[oq->subrank] :
+                            shuf->nxp->node2rep[oq->subrank];
     if (pthread_mutex_init(&oq->oqlock, NULL) != 0) {
       delete oq;
       goto err;
@@ -477,7 +481,8 @@ static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
 
     /* waitq init'd by ctor */
     oset->oqs[ha] = oq;    /* map insert, malloc's under the hood */
-    mlog(UTIL_D1, "init_outset: add oq=%p [%d,%p]", oq, nmit->first, ha);
+    mlog(UTIL_D1, "init_outset: add oq=%p rnks=%d.%d addr=%p", oq, oq->grank,
+         oq->subrank, ha);
   }
   mlog(UTIL_D1, "init_outset: final size=%zd", oset->oqs.size());
 
@@ -491,8 +496,7 @@ static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
   return(0);
 
 err:
-  mlog(UTIL_ERR, "init_outset: %s failed!",
-       (oset == &shuf->localq) ? "local" : "remote");
+  mlog(UTIL_ERR, "init_outset: failed (local=%d)!", islocal);
   shuffler_outset_discard(oset);
   return(-1);
 }
@@ -1970,7 +1974,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
  */
 static hg_return_t shuffler_desthand_cb(const struct hg_cb_info *cbi) {
   hg_handle_t handle = (hg_handle_t)cbi->arg;
-  mlog(SHUF_CALL, "desthand_cb: handle=%p", handle);
+  mlog(SHUF_CALL, "desthand_cb: HG_Respond done.  handle=%p", handle);
   HG_Destroy(handle);
   return(HG_SUCCESS);
 }

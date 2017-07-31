@@ -188,6 +188,7 @@ static void shuffler_openlog(int myrank) {
   }
 
   if (shuf::mlog_namefacility(SHUF_MLOG, "SHUF", NULL) < 0 ||
+      shuf::mlog_namefacility(UTIL_MLOG, "UTIL", NULL) < 0 ||
       shuf::mlog_namefacility(CLNT_MLOG, "CLNT", NULL) < 0 ||
       shuf::mlog_namefacility(DLIV_MLOG, "DLIV", NULL) < 0) {
     fprintf(stderr, "shuffler_namefac: failed!  log disabled\n");
@@ -298,8 +299,9 @@ static hg_return_t hg_proc_rpcin_t(hg_proc_t proc, void *data) {
   hg_proc_op_t op = hg_proc_get_op(proc);
   rpcin_t *struct_data = (rpcin_t *) data;
   struct request *rp, *nrp;
-  int lcv;
+  int cnt, lcv;
   int32_t dlen, typ;
+  mlog(UTIL_CALL, "hg_proc_rpcin_t proc=%p op=%d", proc, op);
 
   if (op == HG_FREE)               /* we combine free and err handling below */
     goto done;
@@ -312,6 +314,7 @@ static hg_return_t hg_proc_rpcin_t(hg_proc_t proc, void *data) {
   procheck(ret, "Proc err seq");
 
   if (op == HG_ENCODE) {   /* serialize list to the proc */
+    cnt = 0;
     XSIMPLEQ_FOREACH(rp, &struct_data->inreqs, next) {
       ret = hg_proc_hg_int32_t(proc, &rp->datalen);
       procheck(ret, "Proc en err datalen");
@@ -323,16 +326,19 @@ static hg_return_t hg_proc_rpcin_t(hg_proc_t proc, void *data) {
       procheck(ret, "Proc en err dst");
       ret = hg_proc_memcpy(proc, rp->data, rp->datalen);
       procheck(ret, "Proc en err data");
+      cnt++;
     }
     /* put in the end of list marker */
     for (lcv = 0 ; lcv < 4 ; lcv++) {
       ret = hg_proc_hg_int32_t(proc, &zero);
       procheck(ret, "Proc err zero");
     }
+    mlog(UTIL_D1, "hg_proc_rpcin_t proc %p, encoded=%d", proc, cnt);
     goto done;
   }
 
   /* op == HG_DECODE */
+  cnt = 0;
   while (1) {
     ret = hg_proc_hg_int32_t(proc, &dlen);  /* should err if we use up data */
     procheck(ret, "Proc de err datalen");
@@ -356,7 +362,9 @@ static hg_return_t hg_proc_rpcin_t(hg_proc_t proc, void *data) {
 
     /* got it!  put at the end of the decoded list */
     XSIMPLEQ_INSERT_TAIL(&struct_data->inreqs, rp, next);
+    cnt++;
   }
+  mlog(UTIL_D1, "hg_proc_rpcin_t proc %p, decoded=%d", proc, cnt);
 
 done:
   if ( ((op == HG_DECODE && ret != HG_SUCCESS) || op == HG_FREE) &&
@@ -378,6 +386,7 @@ done:
  */
 static hg_return_t hg_proc_rpcout_t(hg_proc_t proc, void *data) {
     hg_return_t ret = HG_SUCCESS;
+    mlog(UTIL_CALL, "hg_proc_rpcout_t proc=%p", proc);
     /* hg_proc_op_t op = hg_proc_get_op(proc); */  /* don't need it */
     rpcout_t *struct_data = (rpcout_t *) data;
 
@@ -401,6 +410,8 @@ done:
 static void shuffler_outset_discard(struct outset *oset) {
   std::map<hg_addr_t,struct outqueue *>::iterator oqit;
   struct outqueue *oq;
+  mlog(UTIL_CALL, "shuffler_outset_discard %s",
+       (oset == &oset->shuf->localq) ? "local" : "remote");
 
   for (oqit = oset->oqs.begin() ; oqit != oset->oqs.end() ; oqit++) {
     oq = oqit->second;
@@ -431,6 +442,9 @@ static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
   std::map<int,hg_addr_t>::iterator nmit;
   hg_addr_t ha;
   struct outqueue *oq;
+
+  mlog(UTIL_CALL, "shuffler_init_outset %s",
+       (oset == &shuf->localq) ? "local" : "remote");
 
   oset->maxrpc = maxrpc;
   oset->buftarget = buftarget;
@@ -463,7 +477,9 @@ static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
 
     /* waitq init'd by ctor */
     oset->oqs[ha] = oq;    /* map insert, malloc's under the hood */
+    mlog(UTIL_D1, "init_outset: add oq=%p [%d,%p]", oq, nmit->first, ha);
   }
+  mlog(UTIL_D1, "init_outset: final size=%zd", oset->oqs.size());
 
   /* finally we add it to mercury */
   /* XXX: HG_Register_name can't fail? */
@@ -475,6 +491,8 @@ static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
   return(0);
 
 err:
+  mlog(UTIL_ERR, "init_outset: %s failed!",
+       (oset == &shuf->localq) ? "local" : "remote");
   shuffler_outset_discard(oset);
   return(-1);
 }
@@ -487,6 +505,7 @@ err:
 static void shuffler_flush_discard(struct shuffler *sh) {
   int nc = 0;
   struct flush_op *fop;
+  mlog(UTIL_CALL, "shuffler_flush_discard");
 
   /* kill any pending flush ops (hopefully none) */
   pthread_mutex_lock(&sh->flushlock);
@@ -505,6 +524,7 @@ static void shuffler_flush_discard(struct shuffler *sh) {
   pthread_mutex_unlock(&sh->flushlock);
 
   if (nc) {
+    mlog(UTIL_WARN, "shuffler: flush_discard canceled %d flush op(s)", nc);
     fprintf(stderr, "shuffler: flush_discard canceled %d flush op(s)\n", nc);
     sleep(3);   /* yield to be safe since destroy flushlock is next */
   }
@@ -518,6 +538,7 @@ static void shuffler_flush_discard(struct shuffler *sh) {
  * @return success, normally
  */
 static hg_return_t shuffler_init_flush(struct shuffler *sh) {
+  mlog(UTIL_CALL, "shuffler_init_flush");
   sh->flushbusy = 0;
   XSIMPLEQ_INIT(&sh->fpending);
   sh->curflush = NULL;
@@ -540,6 +561,9 @@ shuffler_t shuffler_init(nexus_ctx_t *nxp, char *funname,
   int rv;
 
   shuffler_openlog(nxp->grank);  /* XXXCCDC: layering */
+
+  mlog(SHUF_CALL, "shuffler_init maxrpc(l/r)=%d/%d targ(l/r)=%d/%d dqmax=%d",
+       lmaxrpc, rmaxrpc, lbuftarget, rbuftarget, deliverq_max);
 
   sh = new shuffler;    /* aborts w/std::bad_alloc on failure */
   sh->nxp = nxp;
@@ -587,6 +611,7 @@ shuffler_t shuffler_init(nexus_ctx_t *nxp, char *funname,
   return(sh);
 
 err:
+  mlog(SHUF_D1, "shuffler_init: FAILED!!!");
   shuffler_outset_discard(&sh->localq);     /* ensures maps are empty */
   shuffler_outset_discard(&sh->remoteq);
   if (sh->funname) free(sh->funname);
@@ -603,6 +628,7 @@ err:
  */
 static int start_threads(struct shuffler *sh) {
   int rv;
+  mlog(SHUF_CALL, "start_threads called");
 
   /* start delivery thread */
   rv = pthread_create(&sh->dtask, NULL, delivery_main, (void *)sh);
@@ -633,6 +659,7 @@ static int start_threads(struct shuffler *sh) {
   }
   sh->remoteq.nrunning = 1;
 
+  mlog(SHUF_CALL, "start_threads SUCCESS!");
   return(0);
 }
 
@@ -644,9 +671,11 @@ static int start_threads(struct shuffler *sh) {
  */
 static void stop_threads(struct shuffler *sh) {
   int stranded;
+  mlog(SHUF_CALL, "stop_threads");
 
   /* stop network */
   if (sh->remoteq.nrunning) {
+    mlog(SHUF_D1, "join remote");
     sh->remoteq.nshutdown = 1;
     pthread_join(sh->remoteq.ntask, NULL);
     sh->remoteq.nshutdown = 0;
@@ -654,6 +683,7 @@ static void stop_threads(struct shuffler *sh) {
 
   /* stop na+sm */
   if (sh->localq.nrunning) {
+    mlog(SHUF_D1, "join local");
     sh->localq.nshutdown = 1;
     pthread_join(sh->localq.ntask, NULL);
     sh->localq.nshutdown = 0;
@@ -661,6 +691,7 @@ static void stop_threads(struct shuffler *sh) {
 
   /* stop delivery */
   if (sh->drunning) {
+    mlog(SHUF_D1, "join delivery");
     pthread_mutex_lock(&sh->deliverlock);
     sh->dshutdown = 1;
     pthread_cond_broadcast(&sh->delivercv);
@@ -674,6 +705,7 @@ static void stop_threads(struct shuffler *sh) {
   if (stranded > 0) {
     fprintf(stderr, "shuffler:stop_threads: WARNING - stranded %d reqs\n",
             stranded);
+    mlog(SHUF_WARN, "shuffler stop_threads: stranded %d reqs", stranded);
   }
 }
 
@@ -689,6 +721,7 @@ static void stop_threads(struct shuffler *sh) {
 static int purge_reqs(struct shuffler *sh) {
   int rv = 0;
   struct request *req;
+  mlog(SHUF_CALL, "purge_reqs");
 
   if (sh->drunning || sh->localq.nrunning || sh->remoteq.nrunning) {
     fprintf(stderr, "ERROR!  purge_reqs called on active system?!!?\n");
@@ -714,6 +747,7 @@ static int purge_reqs(struct shuffler *sh) {
   rv += purge_reqs_outset(sh, 1);
   rv += purge_reqs_outset(sh, 0);
 
+  mlog(SHUF_D1, "purg_reqs => result = %d", rv);
   return(rv);
 }
 
@@ -733,6 +767,7 @@ static int purge_reqs_outset(struct shuffler *sh, int local) {
   struct outqueue *oq;
   struct request *req, *nxt;
   struct output *oput;
+  mlog(UTIL_CALL, "purge_reqs_outset local=%d", local);
 
   oset = (local) ? &sh->localq : &sh->remoteq;
 
@@ -777,6 +812,7 @@ static int purge_reqs_outset(struct shuffler *sh, int local) {
   }
 
   oset->oqflushing = 0;
+  mlog(UTIL_D1, "purge_reqs_outset local=%d =RET=> %d", local, rv);
 
   return(rv);
 }
@@ -795,11 +831,14 @@ static void *delivery_main(void *arg) {
   struct shuffler *sh = (struct shuffler *)arg;
   struct request *req;
   struct req_parent *parent;
+  mlog(DLIV_CALL, "delivery_main running");
 
   pthread_mutex_lock(&sh->deliverlock);
   while (sh->dshutdown == 0) {
     if (sh->deliverq.empty()) {
+      mlog(DLIV_D1, "queue empty, blocked");
       (void)pthread_cond_wait(&sh->delivercv, &sh->deliverlock);
+      mlog(DLIV_D1, "woke up after blocking");
       continue;
     }
 
@@ -814,12 +853,17 @@ static void *delivery_main(void *arg) {
     if (!req) abort();   /* shouldn't ever happen */
 
     pthread_mutex_unlock(&sh->deliverlock);
+    mlog(DLIV_D1, "deliver %d->%d t=%d, dl=%d req=%p",
+         req->src, req->dst, req->type, req->datalen, req);
+    /* note: may block in callback */
     sh->delivercb(req->src, req->dst, req->type, req->data, req->datalen);
+    mlog(DLIV_D1, "deliver %p complete", req);
     pthread_mutex_lock(&sh->deliverlock);
 
     /* see if anyone is waiting for us to flush */
     if (sh->dflush_counter > 0) {
       sh->dflush_counter--;
+      mlog(DLIV_D1, "drop dflush_counter to %d", sh->dflush_counter);
       if (sh->dflush_counter == 0) {   /* droped to 0, wake up flusher */
         if (sh->curflush)
           pthread_cond_signal(&sh->curflush->flush_waitcv);
@@ -841,6 +885,7 @@ static void *delivery_main(void *arg) {
     req = sh->dwaitq.front();
     sh->dwaitq.pop();
     sh->deliverq.push(req);     /* deliverq should be full again */
+    mlog(DLIV_D1, "promoted %p from dwaitq", req);
 
     /*
      * now we need to tell req's parent it can stop waiting.  since
@@ -865,6 +910,7 @@ static void *delivery_main(void *arg) {
   sh->drunning = 0;
   pthread_mutex_unlock(&sh->deliverlock);
 
+  mlog(DLIV_CALL, "delivery_main exiting");
   return(NULL);
 }
 
@@ -882,12 +928,15 @@ static void parent_dref_stopwait(struct shuffler *sh, struct req_parent *parent,
 
   if (parent == NULL) {
     /* this should never happen */
+    mlog(SHUF_CRIT, "parent_dref_stopwiat: ERROR - waiting req w/no parent");
     fprintf(stderr, "parent_dref_stopwait: ERROR - waiting req w/no parent\n");
     return;
   }
 
   /* atomically drop the reference counter and get new value */
   nw = hg_atomic_decr32(&parent->nrefs);
+  mlog(SHUF_CALL, "parent_dref_stopwait %p new-nref=%d", parent, nw);
+
 
   if (nw > 0) {   /* still active reqs, let it keep waiting ... */
     return;
@@ -913,6 +962,9 @@ static void parent_stopwait(struct shuffler *sh, struct req_parent *parent,
                             int abort) {
   rpcout_t reply;
   hg_return_t rv;
+
+  mlog(SHUF_CALL, "parent_stopwait: %p input?=%d abort=%d", parent,
+       (parent && parent->input != NULL), abort);
 
   if (parent == NULL) {
     /* this should never happen */
@@ -943,6 +995,7 @@ static void parent_stopwait(struct shuffler *sh, struct req_parent *parent,
   if (parent->input == NULL) {
     pthread_mutex_lock(&parent->pcvlock);
     parent->need_wakeup = 0;   /* XXX: needed?  vs. nrefs==0 */
+    mlog(SHUF_D1, "parent_stopwait: wake parent %p", parent);
     pthread_cond_signal(&parent->pcv);
     pthread_mutex_unlock(&parent->pcvlock);
     return;
@@ -960,6 +1013,7 @@ static void parent_stopwait(struct shuffler *sh, struct req_parent *parent,
 
   /* only respond if we are not aborting */
   if (!abort) {
+    mlog(SHUF_D1, "parent_stopwait: RPC respond %d %p", reply.ret, parent);
     rv = HG_Respond(parent->input, shuffler_respond_cb, parent, &reply);
   } else {
     rv = HG_CANCELED;
@@ -967,8 +1021,10 @@ static void parent_stopwait(struct shuffler *sh, struct req_parent *parent,
 
   if (rv != HG_SUCCESS) {
     struct hg_cb_info cbi;   /* fake, for err/abort! */
-    if (!abort)
+    if (!abort) {
       fprintf(stderr, "shuffler_stopwaiting: HG_Respond failed %d?\n", rv);
+      mlog(SHUF_WARN, "parent_stopwait: %p reply failed %d!", parent, rv);
+    }
     /* note: we know shuffler_respond_cb() only looks at cbi.arg */
     cbi.arg = parent;
     rv = shuffler_respond_cb(&cbi);
@@ -987,6 +1043,7 @@ static void parent_stopwait(struct shuffler *sh, struct req_parent *parent,
  */
 static hg_return_t shuffler_respond_cb(const struct hg_cb_info *cbi) {
   struct req_parent *parent = (struct req_parent *)cbi->arg;
+  mlog(SHUF_CALL, "shuffler_respond_cb parent=%p", parent);
 
   /*
    * XXX: if we want to cache a list of free parent structures,
@@ -1013,6 +1070,8 @@ static void *network_main(void *arg) {
   hg_return_t ret;
   unsigned int actual;
 
+  mlog(SHUF_CALL, "network_main start (local=%d)",
+       (oset == &oset->shuf->localq));
   while (oset->nshutdown == 0) {
 
     do {
@@ -1024,6 +1083,8 @@ static void *network_main(void *arg) {
     oset->nprogress++;
 
   }
+  mlog(SHUF_CALL, "network_main exiting (local=%d)",
+       (oset == &oset->shuf->localq));
 
   oset->nrunning = 0;
   return(NULL);
@@ -1055,6 +1116,7 @@ static hg_return_t req_parent_init(struct req_parent **parentp,
   int did_malloc = 0;
 
   parent = *parentp;
+  mlog(SHUF_CALL, "req_parent_init: parent=%p req=%p", parent, req);
 
   /* can just bump nrefs for RPCs w/previously allocated parent */
   if (input && parent) {
@@ -1069,6 +1131,7 @@ static hg_return_t req_parent_init(struct req_parent **parentp,
       return(HG_INVALID_PARAM);  /* should never happen */
     }
     parent = (struct req_parent *)malloc(sizeof(*parent));
+    mlog(SHUF_D1, "req_parent_init: malloc parent=%p for %p", parent, req);
     if (parent == NULL) {
       return(HG_NOMEM_ERROR);
     }
@@ -1082,6 +1145,7 @@ static hg_return_t req_parent_init(struct req_parent **parentp,
    * inbound RPC call...
    */
   if (input == NULL) {
+    mlog(SHUF_D1, "req_parent_init: caller parent=%p for %p", parent, req);
     /* set up mutex/cv */
     if (pthread_mutex_init(&parent->pcvlock, NULL)) {  /* only for pcv */
       if (did_malloc) free(parent);
@@ -1132,6 +1196,8 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
   std::map<hg_addr_t, struct outqueue *>::iterator it;
   struct outqueue *oq;
 
+  mlog(CLNT_CALL, "shuffler_send: dst=%d t=%d dl=%d", dst, type, datalen);
+
   /* first, check to see if send is generally disabled */
   if (sh->disablesend)
     return(HG_OTHER_ERROR);
@@ -1153,8 +1219,12 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
    * them all at once... there is no way to incrementally add data).
    */
   req = (struct request *) malloc(sizeof(*req) + datalen);
-  if (req == NULL)
+  if (req == NULL) {
+    mlog(CLNT_ERR, "shuffler_send: dst=%d dl=%d malloc failed", dst, datalen);
     return(HG_NOMEM_ERROR);
+  }
+  mlog(CLNT_D1, "shuffler_send: %d->%d nexus=%d rank=%d addr=%p req=%p",
+       sh->nxp->grank, dst, nexus, rank, dstaddr, req);
 
   req->datalen = datalen;
   req->type = type;
@@ -1169,6 +1239,7 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
   if (nexus == NX_DONE || req->src == dst) {
 
     parent = &parent_store;
+    mlog(CLNT_D1, "shuffler_send: req=%p to self", req);
     rv = req_to_self(sh, req, NULL, 0, &parent);  /* can block */
     return(rv);
   }
@@ -1183,6 +1254,7 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
    */
   if (nexus != NX_ISLOCAL && nexus != NX_SRCREP && nexus != NX_DESTREP) {
     /* nexus doesn't know dst, return error */
+    mlog(CLNT_ERR, "shuffler_send: bogus nexus value %d", nexus);
     return(HG_INVALID_PARAM);
   }
 
@@ -1194,6 +1266,7 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
      * nexus knew the addr, but we couldn't find a a queue!
      * this should not happen!!!
      */
+    mlog(CLNT_ERR, "shuffler_send: no route to dst %d", dst);
     return(HG_INVALID_PARAM);
   }
 
@@ -1248,6 +1321,7 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
   hg_return_t rv = HG_SUCCESS;
   int qsize, needwait;
   struct req_parent *parent;
+  mlog(SHUF_CALL, "req_to_self req=%p, handle=%p", req, input);
 
   pthread_mutex_lock(&sh->deliverlock);
   qsize = sh->deliverq.size();
@@ -1256,6 +1330,7 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
   if (!needwait) {
 
     /* easy!  just queue and wake delivery thread (if needed) */
+    mlog(SHUF_D1, "req_to_self: deliverq req=%p qsize=%d", req, qsize);
     sh->deliverq.push(req);
     if (qsize == 0)
       pthread_cond_signal(&sh->delivercv);  /* empty->!empty: wake thread */
@@ -1266,6 +1341,7 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
     rv = req_parent_init(parentp, req, input, in_seq);
 
     if (rv == HG_SUCCESS) {
+      mlog(SHUF_D1, "req_to_self: dwaitq! req=%p parent=%p", req, req->owner);
       sh->dwaitq.push(req);     /* add req to wait queue */
     } else {
       fprintf(stderr, "shuffler: req_to_self parent init failed (%d)\n", rv);
@@ -1286,7 +1362,9 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
     /* drop extra parent ref created by req_parent_init() before waiting */
     hg_atomic_decr32(&parent->nrefs);
     while (hg_atomic_get32(&parent->nrefs) > 0) {
+      mlog(CLNT_D1, "req_to_self: blocked! req=%p, parent=%p", req, parent);
       pthread_cond_wait(&parent->pcv, &parent->pcvlock);  /*BLOCK HERE*/
+      mlog(CLNT_D1, "req_to_self: UNblocked! req=%p, parent=%p", req, parent);
     }
     pthread_mutex_unlock(&parent->pcvlock);
 
@@ -1331,6 +1409,9 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
   struct request_queue tosendq;
   struct req_parent *parent;
 
+  mlog(SHUF_CALL, "req_via_mercury: req=%p local=%d dstaddr=%p", req,
+       oset == &sh->localq, oq->dst);
+
   pthread_mutex_lock(&oq->oqlock);
   needwait = (oq->nsending >= oset->maxrpc);
   tosend = false;
@@ -1338,6 +1419,7 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
   if (!needwait) {
 
     /* we can start sending this req now, no need to wait */
+    mlog(SHUF_D1, "req_via_mercury: !needwait, send req=%p", req);
     tosend = append_req_to_locked_outqueue(oset, oq, req, &tosendq, false);
 
   } else {
@@ -1346,6 +1428,8 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
     rv = req_parent_init(parentp, req, input, in_seq);
 
     if (rv == HG_SUCCESS) {
+      mlog(SHUF_D1, "req_via_mercury: oqwaitq, req=%p, parent=%p",
+           req, req->owner);
       oq->oqwaitq.push(req);      /* add req to oq's waitq */
     } else {
       fprintf(stderr, "shuffler: req_via_mercury parent init failed (%d)\n",
@@ -1358,6 +1442,7 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
 
   if (tosend) {   /* have a batch ready to send? */
 
+    mlog(SHUF_D1, "req_via_mercury: got a batch to send now!");
     rv = forward_reqs_now(&tosendq, sh, oset, oq);
 
   } else if (!input && needwait && rv == HG_SUCCESS) { /* wait now if needed */
@@ -1367,7 +1452,9 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
     /* drop extra parent ref created by req_parent_init() before waiting */
     hg_atomic_decr32(&parent->nrefs);
     while (hg_atomic_get32(&parent->nrefs) > 0) {
+      mlog(CLNT_D1, "req_via_mercury: blocking req=%p, parent=%p", req, parent);
       pthread_cond_wait(&parent->pcv, &parent->pcvlock);  /* BLOCK HERE */
+      mlog(CLNT_D1, "req_via_mercury: UNblock req=%p, parent=%p", req, parent);
     }
     pthread_mutex_unlock(&parent->pcvlock);
 
@@ -1379,6 +1466,7 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
 
     pthread_cond_destroy(&parent->pcv);
     pthread_mutex_destroy(&parent->pcvlock);
+    mlog(CLNT_D1, "req_via_mercury: req=%p complete", req);
   }
 
   /* done! */
@@ -1405,6 +1493,8 @@ static bool append_req_to_locked_outqueue(struct outset *oset,
                                           struct request_queue *tosend,
                                           bool flushnow) {
   struct request *rv;
+  mlog(SHUF_CALL, "append_to_locked: req=%p, dst=%p, flush=%d",
+       req, oq->dst, flushnow == true);
 
   /* first append req to the loading list */
   if (req) {
@@ -1417,6 +1507,8 @@ static bool append_req_to_locked_outqueue(struct outset *oset,
    * then we can return success now!
    */
   if (oq->loadsize < oset->buftarget && !flushnow) {
+    mlog(SHUF_D1, "append_to_locked: still room dst=%p, sz=%d, targ=%d",
+         oq->dst, oq->loadsize, oset->buftarget);
     return(false);
   }
 
@@ -1430,6 +1522,7 @@ static bool append_req_to_locked_outqueue(struct outset *oset,
   oq->loadsize = 0;
   oq->nsending++;
 
+  mlog(SHUF_D1, "append_to_locked: send NOW dst=%p", oq->dst);
   return(true);
 }
 
@@ -1451,6 +1544,8 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
   hg_return_t rv = HG_SUCCESS;
   struct request *rp, *nrp;
 
+  mlog(SHUF_CALL, "forward_now: to dst=%p", oq->dst);
+
   /* always rehome the requests to in */
   XSIMPLEQ_INIT(&in.inreqs);
   XSIMPLEQ_CONCAT(&in.inreqs, tosend);
@@ -1468,6 +1563,8 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
       pthread_mutex_unlock(&oq->oqlock);
     }
   }
+  mlog(SHUF_CALL, "forward_now: output=%p dst=%p hand=%p",
+       oput, oq->dst, oput->outhand);
 
   /*
    * if (oput != NULL) then we have a handle and we are on the outs list
@@ -1493,6 +1590,7 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
      */
     fprintf(stderr, "shuffler: forward_reqs_now failed (%d)\n", rv);
     fprintf(stderr, "shuffler: DROPPED DATA!!  NOT GOOD!!\n");
+    mlog(SHUF_ERR, "forward request failed!  data likely lost!\n");
     forw_start_next(oq, oput);
   }
 
@@ -1514,6 +1612,8 @@ static hg_return_t forw_cb(const struct hg_cb_info *cbi) {
   struct output *oput = (struct output *)cbi->arg;
   hg_handle_t hand;
   rpcout_t out;
+
+  mlog(SHUF_CALL, "forw_cb: oput=%p success=%d", oput, cbi->ret == HG_SUCCESS);
 
   if (cbi->type != HG_CB_FORWARD) {
     fprintf(stderr, "cbi->type != FORWARD, impossible!\n");
@@ -1559,6 +1659,8 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
   struct req_parent *fq, **fq_end, *parent, *nparent;
   struct request *req;
 
+  mlog(SHUF_CALL, "forw_start_next: dst=%p, oput=%p", oq->dst, oput);
+
   /*
    * get rid of handle if we've got one (XXX should we try and recycle
    * it?  how much memory does caching handles cost us?)
@@ -1580,18 +1682,23 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
         flush_done = true; /* so we call done_oq_flush() after unlock */
         oq->oqflushing = 0;
         oq->oqflush_output = NULL;
+        mlog(SHUF_D1, "forw_start_next: flush done!");
       } else {
         /* set oqflush_output to pending earlier request */
         oq->oqflush_output = XTAILQ_PREV(oput, sending_outputs, q);
+        mlog(SHUF_D1, "forw_start_next: flush update to %p",
+             oq->oqflush_output);
       }
 
     }
 
     XTAILQ_REMOVE(&oq->outs, oput, q);
+    mlog(SHUF_D1, "forw_start_next: done with output=%p", oput);
     free(oput);
     oput = NULL;
   }
   if (oq->nsending > 0) oq->nsending--;
+  mlog(SHUF_D1, "forw_start_next: dst=%p nsending=%d", oq->dst, oq->nsending);
 
   tosend = false;
   flushloadingnow = false;
@@ -1606,6 +1713,7 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
     if (oq->oqflushing && oq->oqflush_waitcounter > 0) {
       oq->oqflush_waitcounter--;
       if (oq->oqflush_waitcounter == 0) {
+        mlog(SHUF_D1, "forw_start_next: dst=%p cleared waitcount", oq->dst);
         flushloadingnow = true;   /* done first phase of flush */
       }
     }
@@ -1631,13 +1739,18 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
     }
 
     /* this bumps nsending back up if it returns a "tosend" list */
+    mlog(SHUF_D1, "forw_start_next: dst=%p, pull req=%p from waitq",
+         oq->dst, req);
     tosend = append_req_to_locked_outqueue(oq->myset, oq, req, &tosendq, false);
   }
 
   /* if flushing, ensure our req got pushed out */
   if (flushloadingnow && !tosend) {
+    mlog(SHUF_D1, "forw_start_next: dst=%p need to push output queue", oq->dst);
     tosend = append_req_to_locked_outqueue(oq->myset, oq, NULL,
                                            &tosendq, true);
+    mlog(SHUF_D1, "forw_start_next: after push dst=%p tosend=%d",
+         oq->dst, tosend == true);
   }
   pthread_mutex_unlock(&oq->oqlock);
 
@@ -1646,6 +1759,8 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
    * (we've saved them all on the "fq" list so we could delay the
    * actual calls to stopwait() until after we've released the oqlock.)
    */
+  if (fq)
+    mlog(SHUF_D1, "forw_start_next: dst=%p stopwait new zero refs", oq->dst);
   for (parent = fq ; parent != NULL ; parent = nparent) {
     nparent = parent->fqnext;  /* save copy, we are going to free parent */
     parent_stopwait(oq->myset->shuf, parent, 0);   /* might HG_Respond, etc. */
@@ -1654,6 +1769,7 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
   /* if waitq gave us enough to start sending, do it now */
   if (tosend) {
     /* this will print an warning on failure */
+    mlog(SHUF_D1, "forw_start_next: dst=%p, sending next", oq->dst);
     (void) forward_reqs_now(&tosendq, oq->myset->shuf, oq->myset, oq);
 
     /* if we are flushing and drained oqwaitq, start output tracking */
@@ -1661,6 +1777,8 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
       pthread_mutex_lock(&oq->oqlock);
       oq->oqflush_output = XTAILQ_LAST(&oq->outs, sending_outputs);
       empty_outs = (oq->oqflush_output == NULL);
+      mlog(SHUF_D1, "forw_start_next: dst=%p set oqflush_output=%p, e=%d",
+           oq->dst, oq->oqflush_output, empty_outs == true);
       if (empty_outs) {     /* unlikely, but possible */
         oq->oqflushing = 0;
         flush_done = true;  /* trigger call to done_oq_flush, below */
@@ -1672,6 +1790,7 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
 
   /* if we finished the flush, pass that info upward */
   if (flush_done) {
+    mlog(SHUF_D1, "forw_start_next: dst=%p, flush_done set", oq->dst);
     done_oq_flush(oq);
   }
 
@@ -1703,6 +1822,8 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
   struct outqueue *oq;
   rpcout_t reply;
 
+  mlog(SHUF_CALL, "rpchand: rpc recv'd.  handle=%p", handle);
+
   /* recover output queue set from handle and see if it is local or remote */
   hgi = HG_Get_info(handle);
   if (!hgi) {
@@ -1716,10 +1837,12 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
   }
   sh = inoset->shuf;
   islocal = (inoset == &sh->localq);
+  mlog(SHUF_D1, "rpchand: got request hand=%p local=%d", handle, islocal);
 
   /* if sending is disabled, we don't want new requests */
   if (sh->disablesend) {
     HG_Destroy(handle);
+    mlog(SHUF_WARN, "rpchand: drop req due to disablesend");
     return(HG_CANCELED);
   }
 
@@ -1727,6 +1850,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
   ret = HG_Get_input(handle, &in);
   if (ret != HG_SUCCESS) {
     fprintf(stderr, "shuffler_rpchand: HG_Get_input failed (%d)\n", ret);
+    mlog(SHUF_WARN, "rpchand: drop req due to get input error");
     HG_Destroy(handle);
     return(ret);
   }
@@ -1746,10 +1870,12 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
 
     /* determine next hop */
     nexus = nexus_next_hop(sh->nxp, req->dst, &rank, &dstaddr);
+    mlog(SHUF_D1, "rpchand: new req=%p dst=%d nexus=%d", req, req->dst, nexus);
 
     /* case 1: we are dst of this request */
     if (nexus == NX_DONE) {
 
+      mlog(SHUF_D1, "rpchand: req=%p to_self", req);
       ret = req_to_self(sh, req, handle, in.seq, &parent);
 
       continue;
@@ -1773,6 +1899,9 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
     if ((nexus != NX_ISLOCAL && nexus != NX_DESTREP) ||
         (nexus == NX_ISLOCAL && islocal)             ||
         (nexus == NX_DESTREP && !islocal)) {
+      mlog(SHUF_ERR, "rpchand: nexus PANIC!  "
+                      "%d: %d->%d len=%d code=%d, l=%d", sh->nxp->grank,
+                      req->src, req->dst, req->datalen, nexus, islocal);
       fprintf(stderr, "shuffler_rpchand: nexus PANIC!  "
                       "%d: %d->%d len=%d code=%d, l=%d\n", sh->nxp->grank,
                       req->src, req->dst, req->datalen, nexus, islocal);
@@ -1788,6 +1917,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
        * nexus knew the addr, but we couldn't find a a queue!
        * this should not happen!!!
        */
+      mlog(SHUF_ERR, "rpchand: no route for %d (%d)", req->dst, nexus);
       fprintf(stderr, "shuffler_rpchand: no route for %d (%d)\n", req->dst,
               nexus);
       free(req);
@@ -1796,6 +1926,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
 
     oq = it->second;    /* now we have the correct output queue */
 
+    mlog(SHUF_D1, "rpchand: req=%p via mercury", req);
     ret = req_via_mercury(sh, outoset, oq, req, handle, in.seq, &parent);
 
   }
@@ -1812,9 +1943,12 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
    * RPC is done and we can respond right now.
    */
   if (parent != NULL) {
+    mlog(SHUF_D1, "rpchand: flowctrl handle=%p, new parent=%p", handle,
+         parent);
     (void) HG_Free_input(handle, &in);
     parent_dref_stopwait(sh, parent, 0);
   } else {
+    mlog(SHUF_D1, "rpchand: done! handle=%p, ret=%d", handle, ret);
     reply.seq = in.seq;
     reply.from = sh->nxp->grank; /* XXX: layering */
     reply.ret = ret;
@@ -1835,6 +1969,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
  */
 static hg_return_t shuffler_desthand_cb(const struct hg_cb_info *cbi) {
   hg_handle_t handle = (hg_handle_t)cbi->arg;
+  mlog(SHUF_CALL, "desthand_cb: handle=%p", handle);
   HG_Destroy(handle);
   return(HG_SUCCESS);
 }
@@ -1857,6 +1992,7 @@ static hg_return_t shuffler_desthand_cb(const struct hg_cb_info *cbi) {
 static hg_return_t aquire_flush(struct shuffler *sh, struct flush_op *fop,
                                 int type, struct outset *oset) {
   hg_return_t rv = HG_SUCCESS;
+  mlog(CLNT_CALL, "aquire_flush: type=%d fop=%p oset=%p", type, fop, oset);
 
   /* first init the flush operation's CV */
   if (pthread_cond_init(&fop->flush_waitcv, NULL) != 0) {
@@ -1871,7 +2007,9 @@ static hg_return_t aquire_flush(struct shuffler *sh, struct flush_op *fop,
   if (fop->status == FLUSHQ_PENDING) {
     XSIMPLEQ_INSERT_TAIL(&sh->fpending, fop, fq);
     while (fop->status == FLUSHQ_PENDING) {
+     mlog(CLNT_D1, "aquire_flush: blocking fop=%p", fop);
       pthread_cond_wait(&fop->flush_waitcv, &sh->flushlock);
+     mlog(CLNT_D1, "aquire_flush: UNblockg fop=%p", fop);
     }
 
     /* wakeup removed us from pending queue, see if we were canceled */
@@ -1881,6 +2019,7 @@ static hg_return_t aquire_flush(struct shuffler *sh, struct flush_op *fop,
       return(HG_CANCELED);
     }
   }
+  mlog(CLNT_D1, "aquire_flush: got flush for fop=%p", fop);
 
   /* setup state for this flush */
   sh->flushbusy = 1;
@@ -1908,6 +2047,7 @@ static hg_return_t aquire_flush(struct shuffler *sh, struct flush_op *fop,
     rv = HG_CANCELED;
   }
 
+  mlog(CLNT_D1, "aquire_flush: fop=%p, return=%d", fop, rv);
   return(rv);
 }
 
@@ -1919,6 +2059,7 @@ static hg_return_t aquire_flush(struct shuffler *sh, struct flush_op *fop,
  */
 static void drop_curflush(struct shuffler *sh) {
   struct flush_op *nxtfop;
+  mlog(CLNT_CALL, "drop_curflush");
 
   pthread_mutex_lock(&sh->flushlock);
   if (sh->flushbusy) {
@@ -1949,10 +2090,12 @@ hg_return_t shuffler_flush_delivery(shuffler_t sh) {
   struct flush_op fop;
   hg_return_t rv;
   int waitcount;
+  mlog(CLNT_CALL, "shuffler_flush_delivery");
 
   rv = aquire_flush(sh, &fop, FLUSH_DELIVER, NULL);    /* may BLOCK here */
   if (rv != HG_SUCCESS)
     return(rv);
+  mlog(CLNT_D1, "shuffler_flush_delivery: aquired flush");
 
   /*
    * we now own the current flush operation, set counter and wait.
@@ -1961,6 +2104,7 @@ hg_return_t shuffler_flush_delivery(shuffler_t sh) {
    */
   pthread_mutex_lock(&sh->deliverlock);
   sh->dflush_counter = sh->deliverq.size() + sh->dwaitq.size();
+  mlog(CLNT_D1, "shuffler_flush_delivery: count=%d", sh->dflush_counter);
   while (sh->dflush_counter > 0 && fop.status == FLUSHQ_READY) {
     pthread_cond_wait(&fop.flush_waitcv, &sh->deliverlock);  /* BLOCK HERE */
   }
@@ -1970,6 +2114,7 @@ hg_return_t shuffler_flush_delivery(shuffler_t sh) {
   drop_curflush(sh);
 
   rv = (fop.status == FLUSHQ_CANCEL) ? HG_CANCELED : HG_SUCCESS;
+  mlog(CLNT_D1, "shuffler_flush_delivery: done rv=%d", rv);
   return(rv);
 }
 
@@ -1986,6 +2131,7 @@ hg_return_t shuffler_flush_qs(shuffler_t sh, int islocal) {
   struct outset *oset;
   std::map<hg_addr_t, struct outqueue *>::iterator it;
   struct outqueue *oq;
+  mlog(CLNT_CALL, "shuffler_flush_qs: islocal=%d", islocal);
 
   /* no point trying to flush if we can't send */
   if (sh->disablesend)
@@ -1998,6 +2144,7 @@ hg_return_t shuffler_flush_qs(shuffler_t sh, int islocal) {
   if (rv != HG_SUCCESS) {
     return(rv);
   }
+  mlog(CLNT_D1, "shuffler_flush_qs: islocal=%d AQUIRED!", islocal);
 
   /*
    * we've aquired the flush, including setting oqflushing and
@@ -2027,6 +2174,8 @@ hg_return_t shuffler_flush_qs(shuffler_t sh, int islocal) {
   if (r == 0)
     oset->oqflushing = 0;
 
+  mlog(CLNT_D1, "shuffler_flush_qs: waiting... islocal=%d oqflushing=%d!",
+       islocal, oset->oqflushing);
   while (oset->oqflushing != 0 && fop.status == FLUSHQ_READY) {
     pthread_cond_wait(&fop.flush_waitcv, &sh->flushlock);  /* BLOCK HERE */
   }
@@ -2040,6 +2189,7 @@ hg_return_t shuffler_flush_qs(shuffler_t sh, int islocal) {
   }
   drop_curflush(sh);
   rv = (fop.status == FLUSHQ_CANCEL) ? HG_CANCELED : HG_SUCCESS;
+  mlog(CLNT_D1, "shuffler_flush_qs: done! islocal=%d rv=%d!", islocal, rv);
   return(rv);
 }
 
@@ -2064,6 +2214,7 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
   int rv = 0;
   bool tosend;
   struct request_queue tosendq;
+  mlog(UTIL_CALL, "start_qflush: oset=%p, oq=%p", oset, oq);
 
   pthread_mutex_lock(&oq->oqlock);
 
@@ -2078,6 +2229,8 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
     oq->oqflush_output = NULL;   /* to be safe */
     oq->oqflushing = 1;
     rv = 1;
+    mlog(UTIL_D1, "start_qflush: oset=%p, oq=%p, waitqcnt=%d",
+         oset, oq, oq->oqflush_waitcounter);
     goto done;
   }
 
@@ -2086,6 +2239,8 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
 
   /* send?  drop oq lock to be safe since we are calling out to mercury */
   if (tosend) {
+    mlog(UTIL_D1, "start_qflush: oset=%p, oq=%p, loading flushed output",
+         oset, oq);
     pthread_mutex_unlock(&oq->oqlock);
     if (forward_reqs_now(&tosendq, sh, oset, oq) != HG_SUCCESS) {
       /* XXX: no good recovery from this */
@@ -2100,10 +2255,13 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
     oq->oqflush_output = XTAILQ_LAST(&oq->outs, sending_outputs);
     oq->oqflushing = 1;
     rv = 1;
+    mlog(UTIL_D1, "start_qflush: oset=%p, oq=%p, waitfor=%p",
+         oset, oq, oq->oqflush_output);
   }
 
 done:
   pthread_mutex_unlock(&oq->oqlock);
+  mlog(UTIL_D1, "start_qflush: oset=%p, oq=%p, return=%d", oset, oq, rv);
   return(rv);
 }
 
@@ -2119,6 +2277,7 @@ done:
 static void clean_qflush(struct shuffler *sh, struct outset *oset) {
   std::map<hg_addr_t, struct outqueue *>::iterator it;
   struct outqueue *oq;
+  mlog(UTIL_CALL, "clean_qflush: oset=%p", oset);
 
   for (it = oset->oqs.begin() ; it != oset->oqs.end() ; it++) {
     oq = it->second;
@@ -2146,6 +2305,7 @@ static void done_oq_flush(struct outqueue *oq) {
   int r;
 
   r = hg_atomic_decr32(&oset->oqflush_counter);
+  mlog(UTIL_CALL, "done_oq_flush: oq=%p, newrefcnt=%d", oq, r);
 
   /* signal main flusher if we dropped the last reference */
   if (r == 0) {
@@ -2163,6 +2323,7 @@ static void done_oq_flush(struct outqueue *oq) {
  */
 hg_return_t shuffler_shutdown(shuffler_t sh) {
   int cnt;
+  mlog(CLNT_CALL, "shuffer_shutdown");
 
   /* stop all new inbound requests */
   sh->disablesend = 1;
@@ -2187,6 +2348,7 @@ hg_return_t shuffler_shutdown(shuffler_t sh) {
   pthread_cond_destroy(&sh->delivercv);
   pthread_mutex_destroy(&sh->flushlock);
   delete sh;
+  mlog(CLNT_CALL, "shuffer_shutdown: DONE closing log...");
   shuffler_closelog();
 
   return(HG_SUCCESS);

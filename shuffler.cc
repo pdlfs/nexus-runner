@@ -386,9 +386,11 @@ done:
  */
 static hg_return_t hg_proc_rpcout_t(hg_proc_t proc, void *data) {
     hg_return_t ret = HG_SUCCESS;
-    mlog(UTIL_CALL, "hg_proc_rpcout_t proc=%p", proc);
-    /* hg_proc_op_t op = hg_proc_get_op(proc); */  /* don't need it */
     rpcout_t *struct_data = (rpcout_t *) data;
+    /* hg_proc_op_t op = hg_proc_get_op(proc); */  /* don't need it */
+
+    mlog(UTIL_CALL, "hg_proc_rpcout_t proc=%p, op=%d", proc,
+         hg_proc_get_op(proc));
 
     ret = hg_proc_hg_int32_t(proc, &struct_data->seq);
     procheck(ret, "Proc err seq");
@@ -1507,10 +1509,12 @@ static bool append_req_to_locked_outqueue(struct outset *oset,
   }
 
   /*
-   * if there is still room in the batch and we are not flushing now,
-   * then we can return success now!
+   * if loading is empty (can happen if req==NULL) or if there is
+   * still room in the batch and we are not flushing now, then we
+   * can return sucess now!
    */
-  if (oq->loadsize < oset->buftarget && !flushnow) {
+  if (oq->loadsize == 0 ||
+      (oq->loadsize < oset->buftarget && !flushnow) ) {
     mlog(SHUF_D1, "append_to_locked: still room dst=%p, sz=%d, targ=%d",
          oq->dst, oq->loadsize, oset->buftarget);
     return(false);

@@ -1522,7 +1522,8 @@ static bool append_req_to_locked_outqueue(struct outset *oset,
   oq->loadsize = 0;
   oq->nsending++;
 
-  mlog(SHUF_D1, "append_to_locked: send NOW dst=%p", oq->dst);
+  mlog(SHUF_D1, "append_to_locked: send NOW dst=%p nsending=%d",
+       oq->dst, oq->nsending);
   return(true);
 }
 

@@ -1582,6 +1582,8 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
 
   if (oput != NULL) {
     in.seq = hg_atomic_incr32(&sh->seqsrc);
+    mlog(SHUF_D1, "forward_now: HG_Forward seq=%d to [%d,%d] dst=%p", in.seq,
+         oq->grank, oq->subrank, oq->dst);
     rv = HG_Forward(oput->outhand, forw_cb, oput, &in);
   }
 
@@ -1865,6 +1867,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
     HG_Destroy(handle);
     return(ret);
   }
+  mlog(SHUF_D1, "rpchand: hand=%p in.seq=%d\n", handle, in.seq);
 
   /*
    * now we've got a list of reqs to either deliver local or forward

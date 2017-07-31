@@ -178,6 +178,8 @@ static void shuffler_openlog(int myrank) {
   if (shufcfg.logfile) {  /* append rank to logfilename */
     snprintf(shufcfg.logfile+shufcfg.lfbaselen, 16, ".%d", myrank);
     lfile = (am_xtra || shufcfg.alllogs) ? shufcfg.logfile : NULL;
+  } else {
+    lfile = NULL;
   }
 
   rv = shuf::mlog_open("shuf", SHUF_MAXFAC, shufcfg.defpri, shufcfg.stderrpri,

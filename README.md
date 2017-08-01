@@ -1,9 +1,88 @@
-# NEEDS TO BE UPDATED FOR nexus-runner
+# nexus-runner
 
-# mercury-runner
+The nexus-runner program is an MPI-based multi-instance 3-hop 
+shuffler test program.   In a shuffle, we distribute send data
+across a set of processes using a destination rank number.
 
-The mercury-runner program is a multi-instance mercury send/recv
-test program.  It contains both a mercury RPC client and RPC server.
+# 3 hop shuffle overview
+
+The shuffler uses mercury RPCs to send a message from a SRC process
+to a DST process.  Our goal is to reduce per-process memory usage by
+reducing the number of output queues and connections to manage on
+each node (we are assuming an environment where each node has
+multiple CPUs and there is an app with processes running on each
+CPU).
+
+As an example, consider Trinity Haswell nodes: there are 10,000 nodes
+with 32 cores on each node.   An application running on these nodes
+would have 320,000 processes (10,000 nodes * 32 cores/node).  If
+all processes communicate with each other, each process will need
+memory for ~320,000 output queues!
+
+To reduce the memory usage, we add layers of indirection to the system
+(in the form of additional mercury RPC hops).   The result is a 3
+hop shuffle:
+
+```
+ SRC  ---na+sm--->   SRCREP ---network--->   DSTREP   ---na+sm--->  DST
+           1                      2                        3
+
+note: "na+sm" is mercury's shared memory transport, "REP" == representative
+```
+
+We divide the job for sending to each remote node among the local
+cores.  Furthermore, we only send to one process on each remote node.
+We expect the remote receiving process to forward our message to
+the final destination (if it isn't the final destination).
+
+Thus, on Trinity, each SRC process has 31 na+sm output queues to
+talk to other local processes, and each SRC process has 10,000/32
+(~313) network output queues to talk to the remote nodes it is
+responsible for.   This is much less than the ~320,000 output queues
+needed in the all-to-all case.
+
+A msg from a SRC to a remote DST on node N flows like this:
+1. SRC find the local proc responsible for talking to N.  this is
+   the SRCREP.   it forward the msg to the SRCREP over na+sm.
+2. the SRCREP forwards all messages for node N to one process on
+   node N over the network.   this is the DSTREP.
+3. the DSTREP receives the message and looks for its na+sm connection
+   to the DST (which is also on node N) and sends the msg to DST.
+at that point the DST will deliver the msg.   Note that it is
+possible to skip hops (e.g. if SRC==SRCREP, the first hop can be
+skipped).
+
+The shuffler library manages this three hop communication.  It
+has support for batching multiple messages into a larger batch
+message (to reduce the overhead of small writes), and it also
+supports write-behind buffering (so that the application can
+queue data in the buffer and continue, rather than waiting for
+the RPC).  If/when the buffers fill, the library provides flow
+control to stop the application from overfilling the buffers.
+
+For output queues we provide:
+* maxrpc:    the max number of outstanding RPCs we allow at one time.
+             additional requests are queued on a wait list until
+             something completes.
+* buftarget: controls batching of requests... we batch multiple
+             requests into a single RPC until we have at least
+             "buftarget" bytes in the batch.  setting this value
+             small effectively disables batching.
+
+Also for delivery, we have a "deliverq_max" which is the max
+number of delivery requests we will buffer before we start
+putting additional requests on the waitq (waitq requests are
+not ack'd until space is available... this triggers flow control).
+
+Note that we identify endpoints by a global rank number (the
+rank number is assigned by MPI... MPI is also used to determine
+the topology -- i.e. which ranks are on the local node.  See
+deltafs-nexus for details...).
+
+
+OLD STUFF 
+
+It contains both a mercury RPC client and RPC server.
 The client sends "count" number of RPC requests and exits when
 all replies are in.  The server receives "count" number of RPC
   requests and exits when all requests have been processed.

@@ -1,10 +1,10 @@
 # nexus-runner
 
-The nexus-runner program is an MPI-based multi-instance 3-hop 
+The nexus-runner program is an MPI-based multi-instance 3-hop
 shuffler test program.   In a shuffle, we distribute send data
 across a set of processes using a destination rank number.
 
-# 3 hop shuffle overview
+## 3 hop shuffle overview
 
 The shuffler uses mercury RPCs to send a message from a SRC process
 to a DST process.  Our goal is to reduce per-process memory usage by
@@ -79,142 +79,138 @@ rank number is assigned by MPI... MPI is also used to determine
 the topology -- i.e. which ranks are on the local node.  See
 deltafs-nexus for details...).
 
+## nexus-runner program
 
-OLD STUFF 
+The nexus-runner program should be launched across a set of
+one or more nodes using mpirun.  Each process will init the
+nexus routing library and the shuffler code.  Processes will
+then send the requested number of messages through the 3 hop
+shuffler, flush the system, and then exit.
 
-It contains both a mercury RPC client and RPC server.
-The client sends "count" number of RPC requests and exits when
-all replies are in.  The server receives "count" number of RPC
-  requests and exits when all requests have been processed.
+The topology of the run is specified using MPI (i.e. mpirun).
+The two variables are the number of nodes to use, and the number
+of processes to run on each node.  The configurarion of the
+3 hop shuffler is specified using nexus-runner command line
+flags.
 
-To use the program you need to run two copies of it.  By
-default both client and server are active so RPCs flow
-in both directions (so each process is a peer).   If you only
-want a one way flow of RPC calls, run one copy of the program
-as a client and run the other as a server.
-
-The mercury-runner program can run multiple instances of mercury
-in the same process.   In this case, server port numbers are assigned
-sequentially starting at the "baseport" (default value 19900).
-On the command line, specify the port numbers as a printf "%d"
-and the program will fill in the value.  For client-only mode,
-we init the client side with port numbers that are just past
-the server port numbers.
-
-Note: the program currently requires that the number of instances
-and number of RPC requests to create and send to match between the
-processes.
-
-By default the client side of the program sends as many RPCs as
-possible in parallel.  You can limit the number of active RPCs
-using the "-l" flag.  Specifying "-l 1" will cause the client side
-of the program to fully serialize all RPC calls.
-
-# command line usage
+## command line usage
 
 ```
-usage: ../bin/mercury-runner [options] ninstances localspec [remotespec]
-
-
-local and remote spec are mercury urls.
-use printf '%d' for the port number.
-remotespec is optional if mode is set to 's' (server)
+usage: nexus-runner [options] mercury-protocol subnet
 
 options:
-	-c count    number of RPCs to perform
-	-d dir      shared dir for passing server addresses
-	-l limit    limit # of client concurrent RPCs
-	-m mode     mode c, s, or cs (client/server)
-	-p port     base port number
-	-q          quiet mode
-	-r n        enable tag suffix with this run number
-	-t sec      timeout (alarm), in seconds
+        -c count    number of shuffle send ops to perform
+        -l          loop through dsts (no random sends)
+        -p port     base port number
+        -q          quiet mode
+        -r n        enable tag suffix with this run number
+        -s maxsndr  only ranks <= maxsndr send requests
+        -t sec      timeout (alarm), in seconds
 
-use '-l 1' to serialize RPCs
+shuffler queue config:
+        -B bytes    batch buf target for network
+        -b bytes    batch buf target for shm
+        -d count    delivery queue size limit
+        -M count    maxrpcs for network output queues
+        -m count    maxrpcs for shm output queues
 
 size related options:
-	-i size     input req size (>= 8 if specified)
-	-o size     output req size (>= 8 if specified)
-	-L size     server's local rma buffer size
-	-S size     client bulk send sz (srvr RMA reads)
-	-R size     client bulk recv sz (srvr RMA writes)
-	-O          one buffer flag (valid if -S and -R set)
-	-X count    client call handle cache max size
-	-Y count    server reply handle cache max size
+        -i size     input req size (>= 24 if specified)
 
-default payload size is 4.
-to enable RMA:
-  must specify -L (on srvr) and -S and/or -R (on cli)
-using -O causes the server to RMA read and write to the
-same buffer (client exports it in RDWR mode)
-default value for -L is 0 (disables RMA on server)
-for -X/-Y: count=-1 disable cache, count=0 unlimited
+default payload size is 24.
+
+logging related options (rank <= max can have xtra logging, use -X):
+        -C mask      mask cfg for non-extra rank procs
+        -E mask      mask cfg for extra rank procs
+        -D priority  default log priority
+        -F logfile   logfile (rank # will be appended)
+        -I n         message buffer size (0=disable)
+        -L           enable logging
+        -O options   opts (a=alllogs,s=stderr,x=xtra stderr)
+        -S priority  print to stderr priority
+        -X n         max extra rank#
+
 ```
 
 The program prints the current set of options at startup time.
-The default count is 5 RPCs, the default limit is set to the count
-(the largest possible value), and the default timeout is 120 seconds.
-The timeout is to prevent the program from hanging forever if
+The default count is 5 send ops, and the default timeout is 120
+seconds.  The timeout is to prevent the program from hanging forever if
 there is a problem with the transport.   Quiet mode can be used
 to prevent the program from printing during the RPCs (so that printing
 does not impact performance).
 
-The -L/-S/-R options use the Mercury HG_Bulk_transfer bulk transfer
-operation to move data.
+By default, destinations are chosen randomly, but if "-l" is used
+the program will instead loop through the list of nodes.  "-s" can
+be used to limit the number of processes sending requests.  For example,
+"-s 0" means that only rank 0 sends requests (the rest just receive
+them).
 
-# examples
+The shuffler queue configuration flags are used to configure the 3
+hop shuffler.  There are limits for local shared memory and network
+communications.  The batch buf target is the number of output bytes the
+shuffler caches before sending out a batch of requests in an RPC.
+If the target is 1, then batching is disabled.  If the target is
+1MB, then the system will send an RPC once it has received a total
+of 1MB of shuffler send requests.  The maxrpcs limits the number of
+outstanding mercury RPC operations allowed for a destination.  If
+this is 1, then that disables having multiple RPCs pending for a
+given output host.  The delivery queue size limit sets the limit
+for the number of pending request delivery ops the shuffler will
+queue in memory before applying flow control to the delivery process.
 
- one client and one server mode, serialized sending, one instance:
+The shuffler has extensive logging that can be enabled by setting
+the "-L" flag.  The default logging priorities are set by the "-D"
+and "-S" flags.  Priority levels are based on syslog(3) and include:
+EMERG, ALERT, CRIT, ERR, WARN, NOTE, INFO, and DEBUG.  Debug
+messages are divided into 4 streams at the same priority level
+(D0, D1, D2, and D3).  Each stream can be selected as desired (or
+all debug msgs can be selected with "DEBUG").  Messages are logged
+if they at or above the current priority.  Logged messages are also
+printed to stderr if they are at or above the stderr priority or
+one of the stderr "-O" options is specified.   Log messages can
+be saved in memory in a circular message buffer (specify the size
+using "-I"), and/or saved in a log file (use "-F" to specify the
+filename -- note that the rank of the process will be appended to
+the filename).  Note that log data in the memory buffer will get
+saved to a core file in the event of a crash (in case you want
+to examine the log at the time of the crash).
+
+For the purpose of logging, the processes are divided into two
+groups using the "-X rank" flag.  Processes whose rank is less
+than or equal to the "-X" value are targeted for extra logging.
+Log files ("-F") are only created for the extra logging processes
+unless the "-O a" option is specified.  The logging masks for
+the processes can be tuned with "-C" and "-E" ... these flags
+allow a log mask to be specified by facility using a format like:
+
+SHUF=INFO,UTIL=ERR,CLNT=DEBUG
+
+The current list of facilities available is: SHUF (general messages),
+UTIL (utility functions), CLNT (client APIs functions), and DLVR
+(delivery thread).
+
+## examples
+
+Run 4 processes on one node.  Only proc 0 sends messages, and it
+sends one message to each destination:
 
 ```
-      client:
-      ./mercury-runner -l 1 -c 50 -q -m c 1 cci+tcp://10.93.1.210:%d \
-                             cci+tcp://10.93.1.233:%d
-      server:
-      ./mercury-runner -c 50 -q -m s 1 cci+tcp://10.93.1.233:%d
-```
-Note that the -c's must match on both sides.
-
-both processes send and recv RPCs (client and server), one
-instance, both sides sending in parallel:
+mpirun -n 4 nexus-runner -c 4 -l -s 0 bmi+tcp 10
 
 ```
-      ./mercury-runner -c 50 -q -m cs 1 cci+tcp://10.93.1.210:%d \
-                             cci+tcp://10.93.1.233:%d
 
-      ./mercury-runner -c 50 -q -m cs 1 cci+tcp://10.93.1.233:%d \
-                             cci+tcp://10.93.1.210:%d
+Above, with full logging (in "/tmp/log.[0-3]"):
+```
+mpirun -n 4 build/nexus-runner -c 4 -l -s 0 \
+	-L -C DEBUG -E DEBUG -O a -F /tmp/log bmi+tcp 10
+
 ```
 
-Check the Mercury documentation to see what transports are supported
-(cci, bmi, gni, etc.).
+## to compile
 
-The -d option can be used to pass addresses between processes via
-a shared directory.  This is required in order to use transports
-such as MPI.   When using -d, the server address is given in the
-form tag=transport (e.g. "h0=bmi+tcp").  The transport text is
-used to init Mercury.  The program will then queue Mercury for
-the local address used to establish the server and write the address
-in a file in the shared directory with the "tag" string in it.
-
-To connect to a client, specify a shared -d directory and the tag.
-The program will then look in the shared directory for the address
-file with the given tag.
-
-Here's an example of using -d with the current directory (as printed
-by the 'pwd' command).  The first command starts a server under the
-tag "h0" and attempts to connect to a server under a tag "h1" (the
-second command does the opposite).
-```
-      ./mercury-runner -l 16 -d `pwd` -q -c 1000 -m cs 1 h0=bmi+tcp h1
-      ./mercury-runner -l 16 -d `pwd` -q -c 1000 -m cs 1 h1=bmi+tcp h0
-```
-
-# to compile
-
-First, you need to know where mercury is installed and you need cmake.
-To compile with a build subdirectory, starting from the top-level
-source dir:
+First, you need to know where deltafs-nexus and mercury are installed.
+You also need cmake.  To compile with a build subdirectory, starting from
+the top-level source dir:
 
 ```
   mkdir build

@@ -41,8 +41,8 @@
  *
  * this is a peer-to-peer style application, so it contains both a
  * mercury RPC client and a mercury RPC server.  the client sends
- * "count" number of RPC requests via nexus to random ranks.  the
- * application exits when all requested sends have completed
+ * "count" number of shuffler send requests via nexus to random ranks.
+ * the application exits when all requested sends have completed
  * (finished processes will wait at a MPI barrier until all sending
  * and processing has completed).
  *
@@ -63,7 +63,7 @@
  * usage: nexus-runner [options] mercury-protocol subnet
  *
  * options:
- *  -c count     number of RPCs to perform
+ *  -c count     number of shuffle send ops to perform
  *  -l           loop through dsts rather than random sends
  *  -p baseport  base port number
  *  -q           quiet mode - don't print during RPCs
@@ -353,14 +353,13 @@ static void usage(const char *msg) {
     if (msg) fprintf(stderr, "%s: %s\n", argv0, msg);
     fprintf(stderr, "usage: %s [options] mercury-protocol subnet\n", argv0);
     fprintf(stderr, "\noptions:\n");
-    fprintf(stderr, "\t-c count    number of RPCs to perform\n");
+    fprintf(stderr, "\t-c count    number of shuffle send ops to perform\n");
     fprintf(stderr, "\t-l          loop through dsts (no random sends)\n");
     fprintf(stderr, "\t-p port     base port number\n");
     fprintf(stderr, "\t-q          quiet mode\n");
     fprintf(stderr, "\t-r n        enable tag suffix with this run number\n");
     fprintf(stderr, "\t-s maxsndr  only ranks <= maxsndr send requests\n");
     fprintf(stderr, "\t-t sec      timeout (alarm), in seconds\n");
-    fprintf(stderr, "\nuse '-l 1' to serialize RPCs\n\n");
     fprintf(stderr, "shuffler queue config:\n");
     fprintf(stderr, "\t-B bytes    batch buf target for network\n");
     fprintf(stderr, "\t-b bytes    batch buf target for shm\n");

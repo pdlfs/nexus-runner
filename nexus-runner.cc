@@ -749,7 +749,12 @@ void *run_instance(void *arg) {
     ret = shuffler_shutdown(isa[n].shand);
     if (ret != HG_SUCCESS)
             fprintf(stderr, "shuffler_flush shutdown failed(%d)\n", ret);
-    printf("%d: shutdown.\n", myrank);
+    printf("%d: shuf shutdown.\n", myrank);
+
+    nrv = nexus_destroy(isa[n].nxp);
+    if (nrv != NX_SUCCESS)
+            fprintf(stderr, "nexus_destroy failed(%d)\n", nrv);
+    delete isa[n].nxp;
 
     return(NULL);
 }

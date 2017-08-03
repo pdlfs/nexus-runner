@@ -1975,6 +1975,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
       HG_Destroy(handle);
   }
 
+  mlog(SHUF_CALL, "rpchand: DONE.  handle=%p", handle);
   return(HG_SUCCESS);
 }
 

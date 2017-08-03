@@ -65,9 +65,11 @@
  * options:
  *  -c count     number of shuffle send ops to perform
  *  -l           loop through dsts rather than random sends
+ *  -o m         add 'm' msec output delay to delivery
  *  -p baseport  base port number
  *  -q           quiet mode - don't print during RPCs
  *  -r n         enable tag suffix with this run number
+ *  -R n         only send to rank 'n'
  *  -s maxsndr   only ranks <= maxsndr send requests
  *  -t secs      timeout (alarm)
  *
@@ -121,6 +123,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <arpa/inet.h>
@@ -281,11 +284,14 @@ struct gs {
     int count;               /* number of msgs to send/recv in a run */
     int deliverq_max;        /* max# reqs in deliverq before waitq */
     int loop;                /* loop through dsts rather than random sends */
+    int odelay;              /* delay delivery output this many msec */
+    struct timespec odspec;  /* odelay in a timespec for nanosleep(3) */
     int maxrpcs_net;         /* max # outstanding RPCs, network */
     int maxrpcs_shm;         /* max # outstanding RPCs, shared memory */
     int quiet;               /* don't print so much */
     int rflag;               /* -r tag suffix spec'd */
     int rflagval;            /* value for -r */
+    int rcvr_only;           /* only send to this rank (if >0) */
     int maxsndr;             /* only ranks <= maxsndr send requests */
     int timeout;             /* alarm timeout */
     char tagsuffix[64];      /* tag suffix: ninst-count-mode-limit-run# */
@@ -355,9 +361,11 @@ static void usage(const char *msg) {
     fprintf(stderr, "\noptions:\n");
     fprintf(stderr, "\t-c count    number of shuffle send ops to perform\n");
     fprintf(stderr, "\t-l          loop through dsts (no random sends)\n");
+    fprintf(stderr, "\t-o m        add 'm' msec output delay to delivery\n");
     fprintf(stderr, "\t-p port     base port number\n");
     fprintf(stderr, "\t-q          quiet mode\n");
     fprintf(stderr, "\t-r n        enable tag suffix with this run number\n");
+    fprintf(stderr, "\t-R rank     only do sends to this rank\n");
     fprintf(stderr, "\t-s maxsndr  only ranks <= maxsndr send requests\n");
     fprintf(stderr, "\t-t sec      timeout (alarm), in seconds\n");
     fprintf(stderr, "shuffler queue config:\n");
@@ -432,6 +440,7 @@ int main(int argc, char **argv) {
     g.deliverq_max = DEF_DELIVERQMAX;
     g.maxrpcs_net = DEF_MAXRPCS;
     g.maxrpcs_shm = DEF_MAXRPCS;
+    g.rcvr_only = -1;            /* disable by default */
     g.maxsndr = g.size - 1;      /* everyone sends by default */
     g.timeout = DEF_TIMEOUT;
 
@@ -440,7 +449,7 @@ int main(int argc, char **argv) {
     g.max_xtra = g.size;
 
     while ((ch = getopt(argc, argv,
-            "B:b:C:c:D:d:E:F:I:i:LlM:m:O:p:qr:S:s:t:X:")) != -1) {
+            "B:b:C:c:D:d:E:F:I:i:LlM:m:O:o:p:qR:r:S:s:t:X:")) != -1) {
         switch (ch) {
             case 'B':
                 g.buftarg_net = atoi(optarg);
@@ -497,12 +506,23 @@ int main(int argc, char **argv) {
                 g.o_stderr =  (strchr(optarg, 's') != NULL);
                 g.o_xstderr = (strchr(optarg, 'x') != NULL);
                 break;
+            case 'o':
+                g.odelay = atoi(optarg);
+                if (g.odelay < 0) usage("bad output delay");
+                g.odspec.tv_sec  = g.odelay / 1000;
+                g.odspec.tv_nsec = (g.odelay % 1000) * 1000000;
+                break;
             case 'p':
                 g.baseport = atoi(optarg);
                 if (g.baseport < 1) usage("bad port");
                 break;
             case 'q':
                 g.quiet = 1;
+                break;
+            case 'R':
+                g.rcvr_only = atoi(optarg);
+                if (g.rcvr_only < 0 || g.rcvr_only >= g.size)
+                  usage("bad -R recv only rank");
                 break;
             case 'r':
                 g.rflag++;  /* will gen tag suffix after args parsed */
@@ -552,6 +572,8 @@ int main(int argc, char **argv) {
         printf("\tquiet      = %d\n", g.quiet);
         if (g.rflag)
             printf("\tsuffix     = %s\n", g.tagsuffix);
+        if (g.rcvr_only >= 0)
+            printf("\trcvr_only  = %d\n", g.rcvr_only);
         printf("\tmaxsndr    = %d\n", g.maxsndr);
         printf("\ttimeout    = %d\n", g.timeout);
         printf("sizes:\n");
@@ -560,6 +582,8 @@ int main(int argc, char **argv) {
         printf("\tmaxrpcs    = %d / %d (net/shm)\n", g.maxrpcs_net,
                g.maxrpcs_shm);
         printf("\tdeliverqmx = %d\n", g.deliverq_max);
+        if (g.odelay > 0)
+            printf("\tout_delay  = %d msec\n", g.odelay);
         printf("\tinput      = %d\n", (g.inreqsz == 0) ? 4 : g.inreqsz);
         if (!g.lenable) {
             printf("\tlogging    = disabled\n");
@@ -670,6 +694,11 @@ void *run_instance(void *arg) {
             } else {
                 sendto = random() % g.size;
             }
+
+            /* skip sendto if we've limited who we send to */
+            if (g.rcvr_only >= 0 && sendto != g.rcvr_only)
+                continue;
+
             msg[0] = htonl(lcv);
             msg[1] = htonl(myrank);
             msg[2] = htonl(sendto);
@@ -736,6 +765,7 @@ void *run_instance(void *arg) {
  */
 static void do_delivery(int src, int dst, int type, void *d, int datalen) {
     uint32_t msg[3];
+    struct timespec rem;
 
     if (datalen == sizeof(msg))
         memcpy(msg, d, datalen);  /* just copy the data since it is small */
@@ -745,4 +775,7 @@ static void do_delivery(int src, int dst, int type, void *d, int datalen) {
     printf("%d: got msg %d->%d, t=%d, len=%d [%d %d %d]\n",
            myrank, src, dst, type, datalen,
            ntohl(msg[0]), ntohl(msg[1]), ntohl(msg[2]));
+
+    if (g.odelay > 0)    /* add some fake processing delay if requested */
+        nanosleep(&g.odspec, &rem);
 }

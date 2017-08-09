@@ -168,6 +168,16 @@ struct outqueue {
   int oqflushing;                   /* 1 if oq is flushing */
   int oqflush_waitcounter;          /* #of waitq reqs flush is waiting on */
   struct output *oqflush_output;    /* output flush is waiting on */
+
+#ifdef SHUFFLER_COUNT
+  /* index 0 is for input==NULL (local reqs), 1 for forwarded reqs */
+  int cntoqreqs[2];                 /* number of reqs queued here */
+  int cntoqsends;                   /* number of RPCs sent */
+  int cntoqflushsend;               /* number of RPCs sent early for flush */
+  int cntoqwaits[2];                /* number of reqs that go on oqwaitq */
+  int cntoqflush;                   /* number of working flush ops */
+  int cntoqmaxwait;                 /* max wait queue size */
+#endif
 };
 
 /*
@@ -194,9 +204,11 @@ struct outset {
   int oqflushing;                   /* non-zero if flush in progress */
   hg_atomic_int32_t oqflush_counter;/* #qs flushing (hold flushlock to init) */
 
+#ifdef SHUFFLER_COUNT
   /* stats (only modified/updated by ntask) */
   int nprogress;                    /* mercury progress fn counter */
   int ntrigger;                     /* mercury trigger fn counter */
+#endif
 };
 
 /*
@@ -260,6 +272,22 @@ struct shuffler {
 #define FLUSH_LOCALQ  1             /* flushing local na+sm queues */
 #define FLUSH_REMOTEQ 2             /* flushing remote network queues */
 #define FLUSH_DELIVER 3             /* flushing delivery queue */
+#define FLUSH_NTYPES  4             /* number of types */
+
+#ifdef SHUFFLER_COUNT
+  /* lock by flushlock */
+  int cntflush[FLUSH_NTYPES];       /* number of flush reqs by type */
+  int cntflushwait;                 /* number of blocked flush reqs */
+
+  /* lock by deliverlock */
+  int cntdblock;                    /* number of times deliver blocks */
+  int cntdeliver;                   /* number of times delivery cb called */
+  int cntdreqs[2];                  /* number of reqs input */
+  int cntdwait[2];                  /* number of reqs on delivery wait q*/
+  int cntdmaxwait;                  /* max waitq size */
+
+  int cntstranded;                  /* number of stranded reqs (@shutdown) */
+#endif
 
 };
 

@@ -506,8 +506,9 @@ static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
     shufzero(&oq->cntoqsends);
     shufzero(&oq->cntoqflushsend);
     shufzero(&oq->cntoqwaits[0]);  shufzero(&oq->cntoqwaits[1]);
-    shufzero(&oq->cntoqflush);
     shufzero(&oq->cntoqmaxwait);
+    shufzero(&oq->cntoqflushes);
+    shufzero(&oq->cntoqflushorder);
 
     /* waitq init'd by ctor */
     oset->oqs[ha] = oq;    /* map insert, malloc's under the hood */
@@ -604,12 +605,14 @@ shuffler_t shuffler_init(nexus_ctx_t *nxp, char *funname,
     shufzero(&sh->cntflush[lcv]);
   }
   shufzero(&sh->cntflushwait);
-  shufzero(&sh->cntstranded);
   shufzero(&sh->cntdblock);
   shufzero(&sh->cntdeliver);
   shufzero(&sh->cntdreqs[0]); shufzero(&sh->cntdreqs[1]);
   shufzero(&sh->cntdwait[0]); shufzero(&sh->cntdwait[1]);
   shufzero(&sh->cntdmaxwait);
+  shufzero(&sh->cntrpcinshm);
+  shufzero(&sh->cntrpcinnet);
+  shufzero(&sh->cntstranded);
 
   sh->nxp = nxp;
   sh->funname = strdup(funname);
@@ -1751,6 +1754,7 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
         oq->oqflush_output = XTAILQ_PREV(oput, sending_outputs, q);
         mlog(SHUF_D1, "forw_start_next: flush update to %p",
              oq->oqflush_output);
+        shufcount(&oq->cntoqflushorder);
       }
 
     }
@@ -1902,6 +1906,10 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
   sh = inoset->shuf;
   islocal = (inoset == &sh->localq);
   mlog(SHUF_D1, "rpchand: got request hand=%p local=%d", handle, islocal);
+  if (islocal)
+    shufcount(&sh->cntrpcinshm);
+  else
+    shufcount(&sh->cntrpcinnet);
 
   /* if sending is disabled, we don't want new requests */
   if (sh->disablesend) {
@@ -2332,7 +2340,7 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
 
 done:
   if (rv != 0)
-    shufcount(&oq->cntoqflush);
+    shufcount(&oq->cntoqflushes);
   pthread_mutex_unlock(&oq->oqlock);
   mlog(UTIL_D1, "start_qflush: oset=%p, oq=%p, flushpending=%d", oset, oq, rv);
   return(rv);
@@ -2408,25 +2416,27 @@ static void dumpstats(shuffler_t sh) {
   mlog(SHUF_NOTE, "deliver: reqs=%d/%d, waits=%d/%d, mxwait=%d",
        sh->cntdreqs[0], sh->cntdreqs[1], sh->cntdwait[0], sh->cntdwait[1],
        sh->cntdmaxwait);
+  mlog(SHUF_NOTE, "recvs: local=%d, network=%d", sh->cntrpcinshm,
+       sh->cntrpcinnet);
+  mlog(SHUF_NOTE, "flushes: rem=%d, local=%d, deliver=%d, waits=%d, strand=%d",
+       sh->cntflush[FLUSH_REMOTEQ], sh->cntflush[FLUSH_LOCALQ],
+       sh->cntflush[FLUSH_DELIVER], sh->cntflushwait, sh->cntstranded);
   mlog(SHUF_NOTE, "oset-size: local=%ld, remote=%ld", sh->localq.oqs.size(),
        sh->remoteq.oqs.size());
   mlog(SHUF_NOTE, "localq: nprogress=%d, ntrigger=%d", sh->localq.nprogress,
        sh->localq.ntrigger);
   mlog(SHUF_NOTE, "remoteq: nprogress=%d, ntrigger=%d", sh->remoteq.nprogress,
        sh->remoteq.ntrigger);
-  mlog(SHUF_NOTE, "flushes: rem=%d, local=%d, deliver=%d, waits=%d, strand=%d",
-       sh->cntflush[FLUSH_REMOTEQ], sh->cntflush[FLUSH_LOCALQ],
-       sh->cntflush[FLUSH_DELIVER], sh->cntflushwait, sh->cntstranded);
   for (lcv = 0; lcv < 2 ; lcv++) {
     mlog(SHUF_NOTE, "outqueue-stats: %s", (lcv == 0) ? "local" : "remote");
     os = o[lcv];
     for (oqit = os->oqs.begin() ; oqit != os->oqs.end() ; oqit++) {
       oq = oqit->second;
-      mlog(SHUF_NOTE,
-     "oq[%d.%d]: reqs=%d/%d, snds=%d, flsnd=%d, waits=%d/%d, fl=%d, mxwait=%d",
+      mlog(SHUF_NOTE, "oq[%d.%d]: reqs=%d/%d, snds=%d, flsnd=%d, "
+                      "waits=%d/%d, fl=%d, mxwait=%d, order=%d",
       oq->grank, oq->subrank, oq->cntoqreqs[0], oq->cntoqreqs[1],
       oq->cntoqsends, oq->cntoqflushsend, oq->cntoqwaits[0], oq->cntoqwaits[1],
-      oq->cntoqflush, oq->cntoqmaxwait);
+      oq->cntoqflushes, oq->cntoqmaxwait, oq->cntoqflushorder);
     }
   }
 #endif

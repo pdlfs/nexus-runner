@@ -175,8 +175,9 @@ struct outqueue {
   int cntoqsends;                   /* number of RPCs sent */
   int cntoqflushsend;               /* number of RPCs sent early for flush */
   int cntoqwaits[2];                /* number of reqs that go on oqwaitq */
-  int cntoqflush;                   /* number of working flush ops */
   int cntoqmaxwait;                 /* max wait queue size */
+  int cntoqflushes;                 /* number of flushes on non-empty oq */
+  int cntoqflushorder;              /* flush rpc finished in different order */
 #endif
 };
 
@@ -285,6 +286,10 @@ struct shuffler {
   int cntdreqs[2];                  /* number of reqs input */
   int cntdwait[2];                  /* number of reqs on delivery wait q*/
   int cntdmaxwait;                  /* max waitq size */
+
+  /* only accessed by one thread */
+  int cntrpcinshm;                  /* #rpcs in on na+sm */
+  int cntrpcinnet;                  /* #rpcs in on network */
 
   int cntstranded;                  /* number of stranded reqs (@shutdown) */
 #endif

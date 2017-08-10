@@ -1473,8 +1473,6 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
     /* we can start sending this req now, no need to wait */
     mlog(SHUF_D1, "req_via_mercury: !needwait, send req=%p", req);
     tosend = append_req_to_locked_outqueue(oset, oq, req, &tosendq, false);
-    if (tosend)
-      shufcount(&oq->cntoqsends);
 
   } else {
 
@@ -1570,9 +1568,6 @@ static bool append_req_to_locked_outqueue(struct outset *oset,
     return(false);
   }
 
-  if (req == NULL && flushnow)
-    shufcount(&oq->cntoqflushsend);  /* sent early due to flush */
-
   /*
    * bump nsending, pass back list of reqs to send, and reset loading
    * list...
@@ -1582,6 +1577,9 @@ static bool append_req_to_locked_outqueue(struct outset *oset,
   /* note: "CONCAT" re-init's &oq->loading to empty */
   oq->loadsize = 0;
   oq->nsending++;
+  shufcount(&oq->cntoqsends);
+  if (req == NULL && flushnow)
+    shufcount(&oq->cntoqflushsend);  /* sent early due to flush */
 
   mlog(SHUF_D1, "append_to_locked: send NOW dst=%p nsending=%d",
        oq->dst, oq->nsending);

@@ -324,7 +324,7 @@ struct gs {
  */
 struct is {
     int n;                   /* our instance number (0 .. n-1) */
-    nexus_ctx_t *nxp;        /* nexus context */
+    nexus_ctx_t nxp;         /* nexus context */
     char myfun[64];          /* my function name */
     shuffler_t shand;        /* shuffler handler */
     int nsends;              /* number of times we've called send */
@@ -671,13 +671,10 @@ void *run_instance(void *arg) {
 
     printf("%d: instance running\n", myrank);
     isa[n].n = n;    /* make it easy to map 'is' structure back to n */
-    isa[n].nxp = new nexus_ctx_t;   /* XXXCDC: need ctor to run */
 
-    /* XXXCDC: port stuff likely to go away */
-    nrv = nexus_bootstrap(isp->nxp, g.baseport, g.baseport+1000 /*XXX*/,
-                          g.hgsubnet, g.hgproto);
-    if (nrv != NX_SUCCESS)
-        complain(1, 0, "%d: nexus_bootstrap failed: %d", myrank, nrv);
+    isa[n].nxp = nexus_bootstrap(g.hgsubnet, g.hgproto);
+    if (!isa[n].nxp)
+        complain(1, 0, "%d: nexus_bootstrap failed", myrank);
     printf("%d: nexus powered up!\n", myrank);
 
     /* make a funcion name and register it in both HGs */
@@ -751,10 +748,7 @@ void *run_instance(void *arg) {
             fprintf(stderr, "shuffler_flush shutdown failed(%d)\n", ret);
     printf("%d: shuf shutdown.\n", myrank);
 
-    nrv = nexus_destroy(isa[n].nxp);
-    if (nrv != NX_SUCCESS)
-            fprintf(stderr, "nexus_destroy failed(%d)\n", nrv);
-    delete isa[n].nxp;
+    nexus_destroy(isa[n].nxp);
 
     return(NULL);
 }

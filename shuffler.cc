@@ -455,16 +455,15 @@ static void shuffler_outset_discard(struct outset *oset) {
  * @param shuf the shuffler that owns this oset
  * @param mcls mercury class
  * @param mctx mercury context
- * @param nmap map of valid addresses (from nexus)
+ * @param nit nexus iterator for map
  * @param rpchand rpc handler function (we register it)
  * @return -1 on error, 0 on success
  */
 static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
                                 shuffler_t shuf, hg_class_t *mcls,
-                                hg_context_t *mctx, nexus_map_t *nmap,
+                                hg_context_t *mctx, nexus_iter_t nit,
                                 hg_rpc_cb_t rpchand) {
   int islocal;
-  std::map<int,hg_addr_t>::iterator nmit;
   hg_addr_t ha;
   struct outqueue *oq;
 
@@ -484,15 +483,14 @@ static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
   shufzero(&oset->ntrigger);
 
   /* now populate the oqs */
-  for (nmit = nmap->begin() ; nmit != nmap->end() ; nmit++) {
-    ha = nmit->second;           /* XXX: layering */
+  for (/*null*/ ; nexus_iter_atend(nit) == 0 ; nexus_iter_advance(nit)) {
+    ha = nexus_iter_addr(nit);
     oq = new struct outqueue;
     if (!oq) goto err;
     oq->myset = oset;
     oq->dst = ha;         /* shared with nexus, nexus owns it */
-    oq->subrank = nmit->first;   /* XXX: layering */
-    oq->grank = (islocal) ? shuf->nxp->local2global[oq->subrank] :
-                            shuf->nxp->node2rep[oq->subrank];
+    oq->subrank = nexus_iter_subrank(nit);
+    oq->grank = nexus_iter_globalrank(nit);
     if (pthread_mutex_init(&oq->oqlock, NULL) != 0) {
       delete oq;
       goto err;
@@ -589,18 +587,21 @@ static hg_return_t shuffler_init_flush(struct shuffler *sh) {
 /*
  * shuffler_init: init's the shuffler layer.
  */
-shuffler_t shuffler_init(nexus_ctx_t *nxp, char *funname,
+shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
            int lmaxrpc, int lbuftarget, int rmaxrpc, int rbuftarget,
            int deliverq_max, shuffler_deliver_t delivercb) {
+  int myrank, lcv, rv;
   shuffler_t sh;
-  int lcv, rv;
+  nexus_iter_t nit;
 
-  shuffler_openlog(nxp->grank);  /* XXXCCDC: layering */
+  myrank = nexus_global_rank(nxp);
+  shuffler_openlog(myrank);
 
   mlog(SHUF_CALL, "shuffler_init maxrpc(l/r)=%d/%d targ(l/r)=%d/%d dqmax=%d",
        lmaxrpc, rmaxrpc, lbuftarget, rbuftarget, deliverq_max);
 
   sh = new shuffler;    /* aborts w/std::bad_alloc on failure */
+  sh->grank = myrank;
   for (lcv = 0 ; lcv < FLUSH_NTYPES ; lcv++) {
     shufzero(&sh->cntflush[lcv]);
   }
@@ -620,14 +621,20 @@ shuffler_t shuffler_init(nexus_ctx_t *nxp, char *funname,
     goto err;
   sh->disablesend = 0;
 
+  nit = nexus_iter(nxp, 1);
+  if (nit == NULL) goto err;
   rv = shuffler_init_outset(&sh->localq, lmaxrpc, lbuftarget, sh,
-          nxp->local_hgcl, nxp->local_hgctx, &nxp->laddrs, /* XXX: layering */
-          shuffler_rpchand);
+          nexus_hgclass_local(nxp), nexus_hgcontext_local(nxp),
+          nit, shuffler_rpchand);
+  nexus_iter_free(&nit);
   if (rv < 0) goto err;
 
+  nit = nexus_iter(nxp, 0);
+  if (nit == NULL) goto err;
   rv = shuffler_init_outset(&sh->remoteq, rmaxrpc, rbuftarget, sh,
-          nxp->remote_hgcl, nxp->remote_hgctx, &nxp->gaddrs, /* XXX: layering */
-          shuffler_rpchand);
+          nexus_hgclass_remote(nxp), nexus_hgcontext_remote(nxp),
+          nit, shuffler_rpchand);
+  nexus_iter_free(&nit);
   if (rv < 0) goto err;
   hg_atomic_set32(&sh->seqsrc, 0);
 
@@ -1059,7 +1066,7 @@ static void parent_stopwait(struct shuffler *sh, struct req_parent *parent,
    * can just free it).
    */
   reply.seq = parent->rpcin_seq;
-  reply.from = sh->nxp->grank; /* XXX: layering */
+  reply.from = sh->grank;
   reply.ret = parent->ret;
 
   /* only respond if we are not aborting */
@@ -1275,11 +1282,11 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
     return(HG_NOMEM_ERROR);
   }
   mlog(CLNT_D1, "shuffler_send: %d->%d nexus=%d rank=%d addr=%p req=%p",
-       sh->nxp->grank, dst, nexus, rank, dstaddr, req);
+       sh->grank, dst, nexus, rank, dstaddr, req);
 
   req->datalen = datalen;
   req->type = type;
-  req->src = sh->nxp->grank;  /* XXX: layering */
+  req->src = sh->grank;
   req->dst = dst;
   req->data = (char *)req + sizeof(*req);
   memcpy(req->data, d, datalen);    /* DATA COPY HERE */
@@ -1973,10 +1980,10 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
         (nexus == NX_ISLOCAL && islocal)             ||
         (nexus == NX_DESTREP && !islocal)) {
       mlog(SHUF_ERR, "rpchand: nexus PANIC!  "
-                      "%d: %d->%d len=%d code=%d, l=%d", sh->nxp->grank,
+                      "%d: %d->%d len=%d code=%d, l=%d", sh->grank,
                       req->src, req->dst, req->datalen, nexus, islocal);
       fprintf(stderr, "shuffler_rpchand: nexus PANIC!  "
-                      "%d: %d->%d len=%d code=%d, l=%d\n", sh->nxp->grank,
+                      "%d: %d->%d len=%d code=%d, l=%d\n", sh->grank,
                       req->src, req->dst, req->datalen, nexus, islocal);
       free(req);
       continue;
@@ -2024,7 +2031,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
   } else {
     mlog(SHUF_D1, "rpchand: done! handle=%p, ret=%d", handle, ret);
     reply.seq = in.seq;
-    reply.from = sh->nxp->grank; /* XXX: layering */
+    reply.from = sh->grank;
     reply.ret = ret;
     (void) HG_Free_input(handle, &in);
     ret = HG_Respond(handle, shuffler_desthand_cb, handle, &reply);

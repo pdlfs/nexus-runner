@@ -139,7 +139,7 @@ typedef void (*shuffler_deliver_t)(int src, int dst, int type,
  * @param delivercb application callback to deliver data
  * @return handle to shuffler (a pointer) or NULL on error
  */
-shuffler_t shuffler_init(nexus_ctx_t *nxp, char *funname,
+shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
            int lmaxrpc, int lbuftarget, int rmaxrpc, int rbuftarget,
            int deliverq_max, shuffler_deliver_t delivercb);
 

@@ -237,7 +237,8 @@ XSIMPLEQ_HEAD(flush_queue, flush_op);
  */
 struct shuffler {
   /* general config */
-  nexus_ctx_t *nxp;                 /* routing table */
+  nexus_ctx_t nxp;                  /* routing table */
+  int grank;                        /* my global rank */
   char *funname;                    /* strdup'd copy of mercury func. name */
   int disablesend;                  /* disable new sends (for shutdown) */
 

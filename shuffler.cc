@@ -45,7 +45,6 @@
 #include <mercury.h>
 #include <mercury_atomic.h>
 #include <mercury_macros.h>
-#include <mpi.h> /*XXX: deltafs-nexus_api.h needs MPI_Comm */
 #include <deltafs-nexus/deltafs-nexus_api.h>
 
 #include "shuffler.h"

@@ -658,7 +658,8 @@ int main(int argc, char **argv) {
 
     if (myrank == 0) printf("main: collection done.\n");
     snprintf(mytag, sizeof(mytag), "ALL%s", g.tagsuffix);
-    useprobe_print(stdout, &mainuse, mytag, -1);
+    if (myrank == 0 || !g.quiet)
+        useprobe_print(stdout, &mainuse, mytag, -1);
 
     MPI_Barrier(MPI_COMM_WORLD);
     if (myrank == 0) printf("main exiting...\n");
@@ -709,8 +710,9 @@ void *run_instance(void *arg) {
             msg[0] = htonl(lcv);
             msg[1] = htonl(myrank);
             msg[2] = htonl(sendto);
-            printf("%d: snd msg %d->%d, t=%d, lcv=%d\n",
-                   myrank, myrank, sendto, lcv % 4, lcv);
+            if (!g.quiet)
+                printf("%d: snd msg %d->%d, t=%d, lcv=%d\n",
+                       myrank, myrank, sendto, lcv % 4, lcv);
             /* vary type value by mod'ing lcv by 4 */
             ret = shuffler_send(isa[n].shand, sendto, lcv % 4,
                                 msg, sizeof(msg));
@@ -781,9 +783,10 @@ static void do_delivery(int src, int dst, int type, void *d, int datalen) {
     else
         memset(msg, 0, sizeof(msg));
 
-    printf("%d: got msg %d->%d, t=%d, len=%d [%d %d %d]\n",
-           myrank, src, dst, type, datalen,
-           ntohl(msg[0]), ntohl(msg[1]), ntohl(msg[2]));
+    if (!g.quiet)
+        printf("%d: got msg %d->%d, t=%d, len=%d [%d %d %d]\n",
+               myrank, src, dst, type, datalen,
+               ntohl(msg[0]), ntohl(msg[1]), ntohl(msg[2]));
 
     if (g.odelay > 0)    /* add some fake processing delay if requested */
         nanosleep(&g.odspec, &rem);

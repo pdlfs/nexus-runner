@@ -675,12 +675,23 @@ void *run_instance(void *arg) {
     struct is *isp = (struct is *)arg;
     int n = isp->n;               /* recover n from isp */
     nexus_ret_t nrv;
-    int lcv, sendto;
+    int lcv, sendto, mylen;
     hg_return_t ret;
-    uint32_t msg[3];
+    uint32_t *msg, msg_store[3];
 
     printf("%d: instance running\n", myrank);
     isa[n].n = n;    /* make it easy to map 'is' structure back to n */
+
+    /* setup send buffer based on requested size (-i) */
+    if (g.inreqsz <= 12) {
+        msg = msg_store;
+        mylen = 12;
+    } else {
+        msg = (uint32_t *)calloc(1, g.inreqsz);
+        if (msg == NULL)
+            complain(1, 0, "malloc of inreq failed");
+        mylen = g.inreqsz;
+    }
 
     isa[n].nxp = nexus_bootstrap(g.hgsubnet, g.hgproto);
     if (!isa[n].nxp)
@@ -710,11 +721,11 @@ void *run_instance(void *arg) {
             msg[1] = htonl(myrank);
             msg[2] = htonl(sendto);
             if (!g.quiet)
-                printf("%d: snd msg %d->%d, t=%d, lcv=%d\n",
-                       myrank, myrank, sendto, lcv % 4, lcv);
+                printf("%d: snd msg %d->%d, t=%d, lcv=%d, sz=%d\n",
+                       myrank, myrank, sendto, lcv % 4, lcv, mylen);
             /* vary type value by mod'ing lcv by 4 */
             ret = shuffler_send(isa[n].shand, sendto, lcv % 4,
-                                msg, sizeof(msg));
+                                msg, mylen);
             if (ret != HG_SUCCESS)
                 fprintf(stderr, "shuffler_send failed(%d)\n", ret);
         }
@@ -760,6 +771,7 @@ void *run_instance(void *arg) {
     printf("%d: shuf shutdown.\n", myrank);
 
     nexus_destroy(isa[n].nxp);
+    if (msg != msg_store) free(msg);
 
     return(NULL);
 }

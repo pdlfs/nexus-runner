@@ -82,15 +82,14 @@
  *  -m count     maxrpcs for shared memory output queues
  *
  * size related options:
- * -i size     input req size (> 24 if specified)
+ * -i size     input req size (> 12 if specified)
  *
  * the input reqs contain:
  *
- *  <seq,xlen,src,dest><extra bytes...>
+ *  <seq,src,dest><extra bytes...>
  *
- * (so 4*sizeof(int) == 16, assuming 32 bit ints).  the "-i" flag can
+ * (so 3*sizeof(int) == 12, assuming 32 bit ints).  the "-i" flag can
  * be used to add additional un-used data to the payload if desired.
- * (this is the "xlen" --- number of extra bytes at end)
  *
  * logging related options (rank <= max can have xtra logging, use -X):
  *  -C mask      mask cfg for non-extra rank procs
@@ -299,9 +298,9 @@ struct gs {
     char tagsuffix[64];      /* tag suffix: ninst-count-mode-limit-run# */
 
     /*
-     * inreq size includes bytes used for seq,xlen,src,dest.
-     * if is zero then we just have those four numbers.  otherwise
-     * it must be >= 40 to account for the header (we pad the rest).
+     * inreq size includes bytes used for seq,src,dest.
+     * if is zero then we just have those three numbers.  otherwise
+     * it must be > 12 to account for the header (we pad the rest).
      */
     int inreqsz;             /* input request size */
 
@@ -378,8 +377,8 @@ static void usage(const char *msg) {
     fprintf(stderr, "\t-M count    maxrpcs for network output queues\n");
     fprintf(stderr, "\t-m count    maxrpcs for shm output queues\n");
     fprintf(stderr, "\nsize related options:\n");
-    fprintf(stderr, "\t-i size     input req size (>= 24 if specified)\n");
-    fprintf(stderr, "\ndefault payload size is 24.\n\n");
+    fprintf(stderr, "\t-i size     input req size (> 12 if specified)\n");
+    fprintf(stderr, "\ndefault payload size is 12.\n\n");
     fprintf(stderr,
      "logging related options (rank <= max can have xtra logging, use -X):\n");
     fprintf(stderr, "\t-C mask      mask cfg for non-extra rank procs\n");
@@ -489,7 +488,7 @@ int main(int argc, char **argv) {
                 break;
             case 'i':
                 g.inreqsz = getsize(optarg);
-                if (g.inreqsz <= 16) usage("bad inreqsz (must be > 16)");
+                if (g.inreqsz <= 12) usage("bad inreqsz (must be > 12)");
                 break;
             case 'L':
                 g.lenable = 1;
@@ -594,7 +593,7 @@ int main(int argc, char **argv) {
         printf("\tdeliverqmx = %d\n", g.deliverq_max);
         if (g.odelay > 0)
             printf("\tout_delay  = %d msec\n", g.odelay);
-        printf("\tinput      = %d\n", (g.inreqsz == 0) ? 4 : g.inreqsz);
+        printf("\tinput      = %d\n", (g.inreqsz == 0) ? 12 : g.inreqsz);
         if (!g.lenable) {
             printf("\tlogging    = disabled\n");
         } else {

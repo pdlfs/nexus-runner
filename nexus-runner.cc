@@ -708,7 +708,7 @@ void *run_instance(void *arg) {
     if (myrank >= g.minsndr && myrank <= g.maxsndr) {
         for (lcv = 0 ; lcv < g.count ; lcv++) {
             if (g.loop) {
-                sendto = lcv % g.size;
+                sendto = (myrank + lcv) % g.size;
             } else {
                 sendto = random() % g.size;
             }

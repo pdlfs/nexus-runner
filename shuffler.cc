@@ -33,6 +33,7 @@
  * 28-Jun-2017  chuck@ece.cmu.edu
  */
 
+#include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <pthread.h>
@@ -2440,6 +2441,7 @@ static void done_oq_flush(struct outqueue *oq) {
     mlog(UTIL_CALL, "done_oq_flush: dropped last oq ref, flush done!");
     pthread_mutex_lock(&sh->flushlock);  /* protects oqflushing */
     oset->oqflushing = 0;
+    assert(sh->curflush != NULL);
     pthread_cond_broadcast(&sh->curflush->flush_waitcv);
     pthread_mutex_unlock(&sh->flushlock);
   }
@@ -2487,6 +2489,17 @@ static void dumpstats(shuffler_t sh) {
     }
   }
 #endif
+}
+
+/*
+ * shuffler_stats: report statistics of an active shuffler.
+ */
+int shuffler_stats(shuffler_t sh, hg_uint64_t* lrpcs, hg_uint64_t* rrpcs) {
+#ifdef SHUFFLER_COUNT
+  *lrpcs = static_cast<hg_uint64_t>(sh->cntrpcinshm);
+  *rrpcs = static_cast<hg_uint64_t>(sh->cntrpcinnet);
+#endif
+  return(0);
 }
 
 /*

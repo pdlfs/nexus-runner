@@ -203,7 +203,7 @@ struct outset {
   std::map<hg_addr_t,struct outqueue *> oqs;
 
   /* state for tracking a flush op (locked w/"flushlock") */
-  int oqflushing;                   /* non-zero if flush in progress */
+  int osetflushing;                 /* non-zero if flush in progress */
   acnt32_t oqflush_counter;         /* #qs flushing (hold flushlock to init) */
 
 #ifdef SHUFFLER_COUNT

@@ -877,7 +877,7 @@ static int purge_reqs_outset(struct shuffler *sh, int local) {
     }
   }
 
-  oset->oqflushing = 0;
+  oset->osetflushing = 0;
   mlog(UTIL_D1, "purge_reqs_outset local=%d =RET=> %d", local, rv);
 
   return(rv);
@@ -2159,7 +2159,7 @@ static hg_return_t aquire_flush(struct shuffler *sh, struct flush_op *fop,
 
   /* if we have an oset, then additional work todo while holding flushlock */
   if (oset) {
-    oset->oqflushing = 1;
+    oset->osetflushing = 1;
     acnt32_set(oset->oqflush_counter, 1);
   }
 
@@ -2196,7 +2196,7 @@ static void drop_curflush(struct shuffler *sh) {
     sh->curflush = NULL;
     sh->flushtype = FLUSH_NONE;   /* to be safe */
     if (sh->flushoset) {
-      sh->flushoset->oqflushing = 0;
+      sh->flushoset->osetflushing = 0;
       /* no need to set oqflush_counter */
       sh->flushoset = NULL;
     }
@@ -2305,11 +2305,11 @@ hg_return_t shuffler_flush_qs(shuffler_t sh, int islocal) {
   pthread_mutex_lock(&sh->flushlock);
   r = acnt32_decr(oset->oqflush_counter);  /* drop our reference */
   if (r == 0)
-    oset->oqflushing = 0;
+    oset->osetflushing = 0;
 
-  mlog(CLNT_D1, "shuffler_flush_qs: waiting... islocal=%d oqflushing=%d!",
-       islocal, oset->oqflushing);
-  while (oset->oqflushing != 0 && fop.status == FLUSHQ_READY) {
+  mlog(CLNT_D1, "shuffler_flush_qs: waiting... islocal=%d osetflushing=%d!",
+       islocal, oset->osetflushing);
+  while (oset->osetflushing != 0 && fop.status == FLUSHQ_READY) {
     pthread_cond_wait(&fop.flush_waitcv, &sh->flushlock);  /* BLOCK HERE */
   }
   pthread_mutex_unlock(&sh->flushlock);
@@ -2426,7 +2426,7 @@ static void clean_qflush(struct shuffler *sh, struct outset *oset) {
     pthread_mutex_unlock(&oq->oqlock);
   }
 
-  oset->oqflushing = 0;
+  oset->osetflushing = 0;
   acnt32_set(oset->oqflush_counter, 0);
 }
 
@@ -2448,7 +2448,7 @@ static void done_oq_flush(struct outqueue *oq) {
   if (r == 0) {
     mlog(UTIL_CALL, "done_oq_flush: dropped last oq ref, flush done!");
     pthread_mutex_lock(&sh->flushlock);  /* protects oqflushing */
-    oset->oqflushing = 0;
+    oset->osetflushing = 0;
     assert(sh->curflush != NULL);
     pthread_cond_broadcast(&sh->curflush->flush_waitcv);
     pthread_mutex_unlock(&sh->flushlock);

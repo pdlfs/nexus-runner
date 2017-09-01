@@ -1785,6 +1785,12 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
 
   /* now lock the queue so we can drop nsending and advance */
   pthread_mutex_lock(&oq->oqlock);
+
+  if (oq->oqflushing && oq->myset->shuf->curflush == NULL) {
+      fprintf(stderr, "shuffler: forw_start_next: flush sanity check fail!\n");
+      abort();
+  }
+
   flush_done = false;
   if (oput) {
 

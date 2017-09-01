@@ -553,7 +553,7 @@ static void shuffler_flush_discard(struct shuffler *sh) {
     nc++;
   }
 
-  if (sh->flushbusy && sh->curflush) {
+  if (sh->curflush) {
     sh->curflush->status = FLUSHQ_CANCEL;
     pthread_cond_signal(&sh->curflush->flush_waitcv);
     nc++;
@@ -576,7 +576,6 @@ static void shuffler_flush_discard(struct shuffler *sh) {
  */
 static hg_return_t shuffler_init_flush(struct shuffler *sh) {
   mlog(UTIL_CALL, "shuffler_init_flush");
-  sh->flushbusy = 0;
   XSIMPLEQ_INIT(&sh->fpending);
   sh->curflush = NULL;
   sh->flushdone = 0;
@@ -2124,7 +2123,7 @@ static hg_return_t aquire_flush(struct shuffler *sh, struct flush_op *fop,
   }
 
   pthread_mutex_lock(&sh->flushlock);
-  fop->status = (sh->flushbusy) ? FLUSHQ_PENDING : FLUSHQ_READY;
+  fop->status = (sh->curflush != NULL) ? FLUSHQ_PENDING : FLUSHQ_READY;
   shufcount(&sh->cntflush[type]);
   if (fop->status == FLUSHQ_PENDING) shufcount(&sh->cntflushwait);
 
@@ -2147,7 +2146,6 @@ static hg_return_t aquire_flush(struct shuffler *sh, struct flush_op *fop,
   mlog(CLNT_D1, "aquire_flush: got flush for fop=%p", fop);
 
   /* setup state for this flush */
-  sh->flushbusy = 1;
   sh->curflush = fop;
   sh->flushdone = 0;
   sh->flushtype = type;
@@ -2187,21 +2185,25 @@ static void drop_curflush(struct shuffler *sh) {
   mlog(CLNT_CALL, "drop_curflush");
 
   pthread_mutex_lock(&sh->flushlock);
-  if (sh->flushbusy) {
-    sh->flushbusy = 0;
+  if (sh->curflush) {
     pthread_cond_destroy(&sh->curflush->flush_waitcv);
     sh->curflush = NULL;
     sh->flushtype = FLUSH_NONE;   /* to be safe */
     if (sh->flushoset) {
       sh->flushoset->oqflushing = 0;
       /* no need to set oqflush_counter */
+      sh->flushoset = NULL;
     }
-    nxtfop = XSIMPLEQ_FIRST(&sh->fpending);
-    if (nxtfop != NULL) {
-      XSIMPLEQ_REMOVE_HEAD(&sh->fpending, fq);
-      nxtfop->status = FLUSHQ_READY;
-      pthread_cond_signal(&nxtfop->flush_waitcv);
-    }
+  } else {
+    fprintf(stderr, "drop_curflush: drop, but no flush in progress!?!\n");
+    abort();    /* this shouldn't happen */
+  }
+
+  nxtfop = XSIMPLEQ_FIRST(&sh->fpending);
+  if (nxtfop != NULL) {
+    XSIMPLEQ_REMOVE_HEAD(&sh->fpending, fq);
+    nxtfop->status = FLUSHQ_READY;
+    pthread_cond_signal(&nxtfop->flush_waitcv);
   }
   pthread_mutex_unlock(&sh->flushlock);
 }

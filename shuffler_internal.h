@@ -265,8 +265,7 @@ struct shuffler {
   /* flush operation management - flush ops are serialized */
   pthread_mutex_t flushlock;        /* locks the following fields */
   struct flush_queue fpending;      /* queue of pending flush ops */
-  int flushbusy;                    /* set if a flush op is in progress */
-  struct flush_op *curflush;        /* currently running flush */
+  struct flush_op *curflush;        /* currently running flush (or NULL) */
   int flushdone;                    /* set when current op done */
   int flushtype;                    /* current flush's type (for diag/logs) */
   struct outset *flushoset;         /* flush outset if local/remote */

@@ -406,6 +406,7 @@ skip_prints:
  */
 static void *run_instance(void *arg);   /* run one instance */
 static void do_delivery(int src, int dst, int type, void *d, int datalen);
+static void do_flush(shuffler_t sh, int verbo);
 
 /*
  * main program.  usage:
@@ -749,32 +750,7 @@ void *run_instance(void *arg) {
         printf("%d: crossed send barrier.\n", myrank);
 
     /* flush it now */
-    ret = shuffler_flush_localqs(isa[n].shand);  /* clear out SRC->SRCREP */
-    if (ret != HG_SUCCESS)
-            fprintf(stderr, "shuffler_flush local failed(%d)\n", ret);
-    MPI_Barrier(MPI_COMM_WORLD);
-    if (myrank == 0)
-        printf("%d: flushed local (hop1).\n", myrank);
-
-    ret = shuffler_flush_remoteqs(isa[n].shand); /* clear SRCREP->DSTREP */
-    if (ret != HG_SUCCESS)
-            fprintf(stderr, "shuffler_flush remote failed(%d)\n", ret);
-    MPI_Barrier(MPI_COMM_WORLD);
-    if (myrank == 0)
-        printf("%d: flushed remote (hop2).\n", myrank);
-
-    ret = shuffler_flush_localqs(isa[n].shand);  /* clear DSTREP->DST */
-    if (ret != HG_SUCCESS)
-            fprintf(stderr, "shuffler_flush local2 failed(%d)\n", ret);
-    MPI_Barrier(MPI_COMM_WORLD);
-    if (myrank == 0)
-        printf("%d: flushed local (hop3).\n", myrank);
-
-    ret = shuffler_flush_delivery(isa[n].shand); /* clear deliverq */
-    if (ret != HG_SUCCESS)
-            fprintf(stderr, "shuffler_flush delivery failed(%d)\n", ret);
-    if (myrank == 0)
-        printf("%d: flushed delivery.\n", myrank);
+    do_flush(isa[n].shand, 1);
 
     ret = shuffler_shutdown(isa[n].shand);
     if (ret != HG_SUCCESS)
@@ -812,4 +788,42 @@ static void do_delivery(int src, int dst, int type, void *d, int datalen) {
 
     if (g.odelay > 0)    /* add some fake processing delay if requested */
         nanosleep(&g.odspec, &rem);
+}
+
+/*
+ * do_flush: do a full shuffler flush
+ *
+ * @param sh shuffler to flush
+ * @param verbo have rank 0 print flush info
+ */
+static void do_flush(shuffler_t sh, int verbo) {
+    hg_return_t ret;
+
+    ret = shuffler_flush_localqs(sh);  /* clear out SRC->SRCREP */
+    if (ret != HG_SUCCESS)
+            fprintf(stderr, "shuffler_flush local failed(%d)\n", ret);
+    MPI_Barrier(MPI_COMM_WORLD);
+    if (verbo && myrank == 0)
+        printf("%d: flushed local (hop1).\n", myrank);
+
+    ret = shuffler_flush_remoteqs(sh); /* clear SRCREP->DSTREP */
+    if (ret != HG_SUCCESS)
+            fprintf(stderr, "shuffler_flush remote failed(%d)\n", ret);
+    MPI_Barrier(MPI_COMM_WORLD);
+    if (verbo && myrank == 0)
+        printf("%d: flushed remote (hop2).\n", myrank);
+
+    ret = shuffler_flush_localqs(sh);  /* clear DSTREP->DST */
+    if (ret != HG_SUCCESS)
+            fprintf(stderr, "shuffler_flush local2 failed(%d)\n", ret);
+    MPI_Barrier(MPI_COMM_WORLD);
+    if (verbo && myrank == 0)
+        printf("%d: flushed local (hop3).\n", myrank);
+
+    ret = shuffler_flush_delivery(sh); /* clear deliverq */
+    if (ret != HG_SUCCESS)
+            fprintf(stderr, "shuffler_flush delivery failed(%d)\n", ret);
+    if (verbo && myrank == 0)
+        printf("%d: flushed delivery.\n", myrank);
+
 }

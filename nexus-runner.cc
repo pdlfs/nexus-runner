@@ -65,6 +65,7 @@
  * options:
  *  -c count     number of shuffle send ops to perform
  *  -e           exclude sending to ourself (skip those sends)
+ *  -f rate      do a flush (collective) every 'rate' sends
  *  -l           loop through dsts rather than random sends
  *  -n minsndr   rank must be >= minsndr to send requests
  *  -o m         add 'm' msec output delay to delivery
@@ -83,7 +84,7 @@
  *  -m count     maxrpcs for shared memory output queues
  *
  * size related options:
- * -i size     input req size (> 12 if specified)
+ *  -i size      input req size (> 12 if specified)
  *
  * the input reqs contain:
  *
@@ -284,6 +285,7 @@ struct gs {
     int buftarg_shm;         /* batch target for shared memory queues */
     int count;               /* number of msgs to send/recv in a run */
     int excludeself;         /* exclude sending to self (skip those sends) */
+    int flushrate;           /* do extra flushes while sending */
     int deliverq_max;        /* max# reqs in deliverq before waitq */
     int loop;                /* loop through dsts rather than random sends */
     int minsndr;             /* rank must be >= minsndr to send requests */
@@ -364,7 +366,8 @@ static void usage(const char *msg) {
     fprintf(stderr, "usage: %s [options] mercury-protocol subnet\n", argv0);
     fprintf(stderr, "\noptions:\n");
     fprintf(stderr, "\t-c count    number of shuffle send ops to perform\n");
-    fprintf(stderr, "\t-e          exclude sending to elf (skip sends)\n");
+    fprintf(stderr, "\t-e          exclude sending to self (skip sends)\n");
+    fprintf(stderr, "\t-f rate     do a flush every 'rate' sends\n");
     fprintf(stderr, "\t-l          loop through dsts (no random sends)\n");
     fprintf(stderr, "\t-n minsndr  rank must be >= minsndr to send requests\n");
     fprintf(stderr, "\t-o m        add 'm' msec output delay to delivery\n");
@@ -458,7 +461,7 @@ int main(int argc, char **argv) {
     g.max_xtra = g.size;
 
     while ((ch = getopt(argc, argv,
-            "B:b:C:c:D:d:E:eF:I:i:LlM:m:n:O:o:p:qR:r:S:s:t:X:")) != -1) {
+            "B:b:C:c:D:d:E:eF:f:I:i:LlM:m:n:O:o:p:qR:r:S:s:t:X:")) != -1) {
         switch (ch) {
             case 'B':
                 g.buftarg_net = atoi(optarg);
@@ -490,6 +493,10 @@ int main(int argc, char **argv) {
                 break;
             case 'F':
                 g.logfile = optarg;
+                break;
+            case 'f':
+                g.flushrate = atoi(optarg);
+                if (g.flushrate < 0) usage("bad flush rate");
                 break;
             case 'I':
                 g.msgbufsz = getsize(optarg);
@@ -586,6 +593,8 @@ int main(int argc, char **argv) {
         printf("\tbaseport   = %d\n", g.baseport);
         printf("\tcount      = %d\n", g.count);
         printf("\texcludeself= %d\n", g.excludeself);
+        if (g.flushrate)
+            printf("\tflushrate  = %d\n", g.flushrate);
         printf("\tloop       = %d\n", g.loop);
         printf("\tquiet      = %d\n", g.quiet);
         if (g.rflag)
@@ -685,7 +694,7 @@ void *run_instance(void *arg) {
     struct is *isp = (struct is *)arg;
     int n = isp->n;               /* recover n from isp */
     nexus_ret_t nrv;
-    int lcv, sendto, mylen;
+    int flcnt, lcv, sendto, mylen;
     hg_return_t ret;
     uint32_t *msg, msg_store[3];
 
@@ -714,9 +723,17 @@ void *run_instance(void *arg) {
     isa[n].shand = shuffler_init(isa[n].nxp, isa[n].myfun, g.maxrpcs_shm,
                    g.buftarg_shm, g.maxrpcs_net, g.buftarg_net,
                    g.deliverq_max, do_delivery);
+    flcnt = 0;
 
-    if (myrank >= g.minsndr && myrank <= g.maxsndr) {
+    if (myrank >= g.minsndr && myrank <= g.maxsndr) {   /* are we a sender? */
         for (lcv = 0 ; lcv < g.count ; lcv++) {
+
+            /* flush if requested */
+            if (lcv && g.flushrate && (lcv % g.flushrate) == 0) {
+                flcnt++;
+                do_flush(isa[n].shand, 0);
+            }
+
             if (g.loop) {
                 sendto = (myrank + lcv) % g.size;
             } else {
@@ -741,10 +758,22 @@ void *run_instance(void *arg) {
             if (ret != HG_SUCCESS)
                 fprintf(stderr, "shuffler_send failed(%d)\n", ret);
         }
+
+    } else if (g.flushrate) {
+
+        /* need to do collective flush even if we are not a sender */
+        for (lcv = 0 ; lcv < g.count ; lcv++) {
+
+            if (lcv && (lcv % g.flushrate) == 0) {
+                flcnt++;
+                do_flush(isa[n].shand, 0);
+            }
+        }
+
     }
 
     /* done sending */
-    printf("%d: sends complete!\n", myrank);
+    printf("%d: sends complete (flcnt=%d)!\n", myrank, flcnt);
     MPI_Barrier(MPI_COMM_WORLD);
     if (myrank == 0)
         printf("%d: crossed send barrier.\n", myrank);
@@ -791,7 +820,7 @@ static void do_delivery(int src, int dst, int type, void *d, int datalen) {
 }
 
 /*
- * do_flush: do a full shuffler flush
+ * do_flush: do a full shuffler flush (collective call)
  *
  * @param sh shuffler to flush
  * @param verbo have rank 0 print flush info

@@ -1839,6 +1839,7 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
     }
 
     parent = req->owner;
+    req->owner = NULL;      /* detach req from owner now it is unblocked */
     if (parent == NULL) {
 
       /* should never happen */

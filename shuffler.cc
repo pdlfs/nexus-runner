@@ -1735,12 +1735,10 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
     rv = HG_Forward(oput->outhand, forw_cb, oput, &in);
   }
 
-  /* data copied to handle or we failed to send.  either way free this. */
-  XSIMPLEQ_FOREACH_SAFE(rp, &in.inreqs, next, nrp) {
-    free(rp);
-  }
-
-  if (oput == NULL || rv != HG_SUCCESS) { /* setup failed || HG_Forw failed */
+  /*
+   * look for error: setup failed || HG_Forward failed
+   */
+  if (oput == NULL || rv != HG_SUCCESS) {
     /*
      * this is pretty terrible... we've failed to forward our
      * batch packet.  there is no pretty way to recover from this,
@@ -1748,9 +1746,17 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
      * then we move on and try to start something else...
      */
     fprintf(stderr, "shuffler: forward_reqs_now failed (%d)\n", rv);
-    fprintf(stderr, "shuffler: DROPPED DATA!!  NOT GOOD!!\n");
-    mlog(SHUF_ERR, "forward request failed!  data likely lost!\n");
+    mlog(SHUF_CRIT, "forward request failed (%d)!  data likely lost!", rv);
+    drop_reqs(NULL, &in.inreqs, "forward_reqs_now");
     forw_start_next(oq, oput);
+
+  } else {
+
+    /* success!  the data was copied to the handle, so we can free reqs */
+    XSIMPLEQ_FOREACH_SAFE(rp, &in.inreqs, next, nrp) {
+      free(rp);
+    }
+
   }
 
   return(rv);

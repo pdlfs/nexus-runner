@@ -1378,12 +1378,13 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
  * drop_reqs: helper fn that drops and frees requests that can't be
  * sent due to some unexpected error.  we route though this function
  * to put the error handling in one place and make it easy to find
- * places where this problem occurs.   the reqs should not be attached
- * to any parent (or we'll lose a reference).
+ * places where data is dropped.   the reqs should not be attached
+ * to any parent (or we'll lose a reference).  we print an errmsg
+ * if 'msg' is not NULL (if it is null, the caller should print the msg).
  *
  * @param reqp ptr to request to free (or null).  we set to null
  * @param reqq list of reqs to free (or null).  re-init'd to empty
- * @param msg string to include in error message
+ * @param msg err msg string, if NULL we don't print anything
  */
 void drop_reqs(struct request **reqp, struct request_queue *reqq,
                const char *msg) {
@@ -1393,11 +1394,13 @@ void drop_reqs(struct request **reqp, struct request_queue *reqq,
   if (reqp) {
     rp = *reqp;
     owned = (rp->owner != NULL);
-    mlog(SHUF_CRIT, "drop_reqs: drop %p(o=%d) due to err (%s) - data LOST!",
-         rp, owned, msg);
-    /* print to stderr so we get err msg even if mlog is disabled */
-    fprintf(stderr, "drop_reqs: drop %p(o=%d) due to err (%s) - data LOST!\n",
-         rp, owned, msg);
+    if (msg) {
+      mlog(SHUF_CRIT, "drop_reqs: drop %p(o=%d) due to err (%s) - data LOST!",
+           rp, owned, msg);
+      /* print to stderr so we get err msg even if mlog is disabled */
+      fprintf(stderr, "drop_reqs: drop %p(o=%d) due to err (%s) - data LOST!\n",
+           rp, owned, msg);
+    }
     free(rp);
     *reqp = NULL;
   }
@@ -1405,12 +1408,14 @@ void drop_reqs(struct request **reqp, struct request_queue *reqq,
   if (reqq) {
     XSIMPLEQ_FOREACH_SAFE(rp, reqq, next, nrp) {
       owned = (rp->owner != NULL);
-      mlog(SHUF_CRIT, "drop_reqs: drop %p(O=%d) due to err (%s) - data LOST!",
-           rp, owned, msg);
-      /* print to stderr so we get err msg even if mlog is disabled */
-      fprintf(stderr,
-              "drop_reqs: drop %p(O=%d) due to err (%s) - data LOST!\n",
-           rp, owned, msg);
+      if (msg) {
+        mlog(SHUF_CRIT, "drop_reqs: drop %p(O=%d) due to err (%s) - data LOST!",
+             rp, owned, msg);
+        /* print to stderr so we get err msg even if mlog is disabled */
+        fprintf(stderr,
+                "drop_reqs: drop %p(O=%d) due to err (%s) - data LOST!\n",
+             rp, owned, msg);
+      }
       free(rp);
     }
     XSIMPLEQ_INIT(reqq);
@@ -1488,8 +1493,7 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
       shufmax(&sh->cntdmaxwait, sh->dwaitq.size());
     } else {
       fprintf(stderr, "shuffler: req_to_self parent init failed (%d)\n", rv);
-      free(req);                /* error means we can't send it */
-      req = NULL;               /* to be safe */
+      drop_reqs(&req, NULL, "req_to_self"); /* error means we can't send it */
     }
 
   }
@@ -1581,8 +1585,7 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
     } else {
       fprintf(stderr, "shuffler: req_via_mercury parent init failed (%d)\n",
               rv);
-      free(req);                /* error means we can't send it */
-      req = NULL;               /* to be safe */
+      drop_reqs(&req, NULL, "req_via_mercury"); /* error, can't send it */
     }
   }
   pthread_mutex_unlock(&oq->oqlock);
@@ -1776,6 +1779,7 @@ static hg_return_t forw_cb(const struct hg_cb_info *cbi) {
     abort();
   }
   if (cbi->ret != HG_SUCCESS) {
+    mlog(SHUF_CRIT, "shuffle: forw_cb() failed (%d)", cbi->ret);
     fprintf(stderr, "shuffle: forw_cb() failed (%d)\n", cbi->ret);
     fprintf(stderr, "shuffle: may have lost data!\n");
   }
@@ -2076,7 +2080,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
       fprintf(stderr, "shuffler_rpchand: nexus PANIC!  "
                       "%d: %d->%d len=%d code=%d, l=%d\n", sh->grank,
                       req->src, req->dst, req->datalen, nexus, islocal);
-      free(req);
+      drop_reqs(&req, NULL, NULL);  /* no msg, we already printed one */
       continue;
     }
 
@@ -2091,7 +2095,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
       mlog(SHUF_ERR, "rpchand: no route for %d (%d)", req->dst, nexus);
       fprintf(stderr, "shuffler_rpchand: no route for %d (%d)\n", req->dst,
               nexus);
-      free(req);
+      drop_reqs(&req, NULL, NULL);  /* no msg, we already printed one */
       continue;
     }
 

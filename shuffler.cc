@@ -1375,6 +1375,50 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
 }
 
 /*
+ * drop_reqs: helper fn that drops and frees requests that can't be
+ * sent due to some unexpected error.  we route though this function
+ * to put the error handling in one place and make it easy to find
+ * places where this problem occurs.   the reqs should not be attached
+ * to any parent (or we'll lose a reference).
+ *
+ * @param reqp ptr to request to free (or null).  we set to null
+ * @param reqq list of reqs to free (or null).  re-init'd to empty
+ * @param msg string to include in error message
+ */
+void drop_reqs(struct request **reqp, struct request_queue *reqq,
+               const char *msg) {
+  struct request *rp, *nrp;
+  int owned;
+
+  if (reqp) {
+    rp = *reqp;
+    owned = (rp->owner != NULL);
+    mlog(SHUF_CRIT, "drop_reqs: drop %p(o=%d) due to err (%s) - data LOST!",
+         rp, owned, msg);
+    /* print to stderr so we get err msg even if mlog is disabled */
+    fprintf(stderr, "drop_reqs: drop %p(o=%d) due to err (%s) - data LOST!\n",
+         rp, owned, msg);
+    free(rp);
+    *reqp = NULL;
+  }
+
+  if (reqq) {
+    XSIMPLEQ_FOREACH_SAFE(rp, reqq, next, nrp) {
+      owned = (rp->owner != NULL);
+      mlog(SHUF_CRIT, "drop_reqs: drop %p(O=%d) due to err (%s) - data LOST!",
+           rp, owned, msg);
+      /* print to stderr so we get err msg even if mlog is disabled */
+      fprintf(stderr,
+              "drop_reqs: drop %p(O=%d) due to err (%s) - data LOST!\n",
+           rp, owned, msg);
+      free(rp);
+    }
+    XSIMPLEQ_INIT(reqq);
+  }
+
+}
+
+/*
  * req_to_self: sending/forward a req to ourself via the delivery thread.
  *
  * for apps sending (i.e. input==NULL, we are called via shuffler_send())

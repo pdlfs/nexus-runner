@@ -134,6 +134,10 @@ struct req_parent {
 struct output {
   struct outqueue *oqp;             /* owning output queue */
   hg_handle_t outhand;              /* out handle used with HG_Forward() */
+  int ostep;                        /* output step */
+#define OSTEP_PREP 0                /* prepare, not at forward_reqs_now yet */
+#define OSTEP_SEND 1                /* forward_reqs_now sending */
+#define OSTEP_CANCEL (-1)           /* trying to cancel request */
   XTAILQ_ENTRY(output) q;           /* linkage (locked by oqlock) */
 };
 

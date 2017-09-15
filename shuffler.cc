@@ -260,6 +260,7 @@ static bool append_req_to_locked_outqueue(struct outset *oset,
                                           struct outqueue *oq,
                                           struct request *req,
                                           struct request_queue *tosendq,
+                                          struct output **newoutputp,
                                           bool flushnow);
 static hg_return_t aquire_flush(struct shuffler *sh, struct flush_op *fop,
                                 int type, struct outset *oset);
@@ -270,7 +271,7 @@ static hg_return_t forw_cb(const struct hg_cb_info *cbi);
 static void forw_start_next(struct outqueue *oq, struct output *oput);
 static hg_return_t forward_reqs_now(struct request_queue *tosendq,
                                     struct shuffler *sh, struct outset *oset,
-                                    struct outqueue *oq);
+                                    struct outqueue *oq, struct output *oput);
 static int purge_reqs(struct shuffler *sh);
 static int purge_reqs_outset(struct shuffler *sh, int local);
 static hg_return_t req_parent_init(struct req_parent **parentp,
@@ -1555,6 +1556,7 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
   int needwait;
   bool tosend;
   struct request_queue tosendq;
+  struct output *oput;
   struct req_parent *parent;
 
   mlog(SHUF_CALL, "req_via_mercury: req=%p local=%d rnk=[%d.%d] dst=%p", req,
@@ -1569,7 +1571,8 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
 
     /* we can start sending this req now, no need to wait */
     mlog(SHUF_D1, "req_via_mercury: !needwait, send req=%p", req);
-    tosend = append_req_to_locked_outqueue(oset, oq, req, &tosendq, false);
+    tosend = append_req_to_locked_outqueue(oset, oq, req,
+                                           &tosendq, &oput, false);
 
   } else {
 
@@ -1593,7 +1596,7 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
   if (tosend) {   /* have a batch ready to send? */
 
     mlog(SHUF_D1, "req_via_mercury: got a batch to send now!");
-    rv = forward_reqs_now(&tosendq, sh, oset, oq);
+    rv = forward_reqs_now(&tosendq, sh, oset, oq, oput);
 
   } else if (!input && needwait && rv == HG_SUCCESS) { /* wait now if needed */
     parent = *parentp;
@@ -1627,14 +1630,22 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
 /*
  * append_req_to_locked_outqueue: append a req to a locked output
  * queue.  this may result in a message that we need to forward
- * (e.g. if we fill a batch or if we are flushing).  we bump nsending
- * if this function returns a list of reqs to send.  note that
- * req is allowed to be NULL (e.g. if we just want to flush).
+ * (e.g. if we fill a batch or if we are flushing).  in that case
+ * we bump nsending, allocate an output structure (with a null
+ * handle, that will be allocated later), put the output structure
+ * on the outs list, generate a list of reqs to send, and return
+ * TRUE.  note that req is allowed to be NULL (e.g. if we just
+ * want to flush and are not sending anything).
+ *
+ * if we encounter an allocation error (i.e. malloc fails),
+ * we have no choice but to drop requests and complain about
+ * it since data will be lost.
  *
  * @param oset the output set that our outq belongs to
  * @param oq the locked output queue (we've already checked for room)
  * @param req the request to append to the queue (NULL is ok)
  * @param tosend a queue of requests ready to send (OUT, if ret true)
+ * @param newoutputp output struct for tosend (OUT, if ret is true)
  * @param flushnow don't wait for buftarget bytes, flush now
  * @return true a list of requests to send is in "tosend"
  */
@@ -1642,28 +1653,59 @@ static bool append_req_to_locked_outqueue(struct outset *oset,
                                           struct outqueue *oq,
                                           struct request *req,
                                           struct request_queue *tosend,
+                                          struct output **newoutputp,
                                           bool flushnow) {
   struct request *rv;
+  int newloadsize;
+  struct output *newoutput;
   mlog(SHUF_CALL, "append_to_locked: req=%p, dst=%p, flush=%d",
        req, oq->dst, flushnow == true);
 
-  /* first append req to the loading list */
-  if (req) {
-    XSIMPLEQ_INSERT_TAIL(&oq->loading, req, next);
-    oq->loadsize += req->datalen;  /* add to total batch size */
-  }
+  /* what is new loadsize?  it may not change if req is null */
+  newloadsize = (req) ? oq->loadsize + req->datalen : oq->loadsize;
 
   /*
-   * if loading is empty (can happen if req==NULL) or if there is
-   * still room in the batch and we are not flushing now, then we
-   * can return sucess now!
+   * see if there is enough space in loading for us to just queue
+   * the req (if not NULL) and return without doing anything else.
+   * if we are flushing then we have to send now if we have anything.
    */
-  if (oq->loadsize == 0 ||
-      (oq->loadsize < oset->buftarget && !flushnow) ) {
+  if (newloadsize == 0 ||
+      (newloadsize < oset->buftarget && !flushnow) ) {
+    if (req) {
+      XSIMPLEQ_INSERT_TAIL(&oq->loading, req, next);
+      oq->loadsize = newloadsize;
+    }
     mlog(SHUF_D1, "append_to_locked: still room dst=%p, sz=%d, targ=%d",
          oq->dst, oq->loadsize, oset->buftarget);
     return(false);
   }
+
+  /*
+   * now we know we need to send something.  we need to allocate an
+   * output structure, add the current request in (if not NULL),
+   * bump nsending, return back the output and list of reqs to send,
+   * and finally reset loading.   if the allocation of the output
+   * structure fails we are in a bad place and discard reqs (so we
+   * drop data!).  we complain loudly if we have to do this.
+   */
+  newoutput = (struct output *) malloc(sizeof(*newoutput));
+  if (newoutput == NULL) {
+    mlog(SHUF_ERR, "append_to_locked malloc failed!  data likely lost!");
+    if (flushnow) {
+      drop_reqs(&req, &oq->loading, "append_to_locked (f)");
+      oq->loadsize = 0;
+    } else {
+      drop_reqs(&req, NULL, "append_to_locked");
+    }
+    return(false);
+  }
+
+  /* init output and put on the oq */
+  newoutput->oqp = oq;
+  newoutput->outhand = NULL;
+  newoutput->ostep = OSTEP_PREP;    /* preparing, not sent yet */
+  XTAILQ_INSERT_TAIL(&oq->outs, newoutput, q);
+  *newoutputp = newoutput;
 
   /*
    * bump nsending, pass back list of reqs to send, and reset loading
@@ -1671,6 +1713,9 @@ static bool append_req_to_locked_outqueue(struct outset *oset,
    */
   XSIMPLEQ_INIT(tosend);
   XSIMPLEQ_CONCAT(tosend, &oq->loading);
+  if (req) {
+    XSIMPLEQ_INSERT_TAIL(tosend, req, next);
+  }
   /* note: "CONCAT" re-init's &oq->loading to empty */
   oq->loadsize = 0;
   oq->nsending++;
@@ -1685,20 +1730,24 @@ static bool append_req_to_locked_outqueue(struct outset *oset,
 
 /*
  * forward_reqs_now: actually send a batch of requests now.  oq->nsending
- * has already been bumped up (we'll bump it back down on error).
+ * has already been bumped up and an output struct has been allocated
+ * and placed on the outs list, but we hold the only reference to the
+ * reqs in the tosend request_queue.   if we fail we have to drop nsending
+ * and remove the output from the list.
  *
  * @param tosend a list of reqs to send
  * @param sh shuffler we are sending with
  * @param oset the output queue set we are working with
  * @param oq the output queue we are sending on
+ * @param oput the freshly allocated output for the send
  * @return status (hopefully success)
  */
 static hg_return_t forward_reqs_now(struct request_queue *tosend,
                                     struct shuffler *sh, struct outset *oset,
-                                    struct outqueue *oq) {
-  rpcin_t in;
-  struct output *oput;
+                                    struct outqueue *oq, struct output *oput) {
   hg_return_t rv = HG_SUCCESS;
+  hg_handle_t newhand = NULL;
+  rpcin_t in;
   struct request *rp, *nrp;
 
   mlog(SHUF_CALL, "forward_now: to dst=%p", oq->dst);
@@ -1707,43 +1756,42 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
   XSIMPLEQ_INIT(&in.inreqs);
   XSIMPLEQ_CONCAT(&in.inreqs, tosend);
 
-  oput = (struct output *) malloc(sizeof(*oput));
-  if (oput) {
-    oput->oqp = oq;
-    rv = HG_Create(oset->mctx, oq->dst, oset->rpcid, &oput->outhand);
-    if (rv != HG_SUCCESS) {
-      free(oput);
-      oput = NULL;
-    } else {
-      pthread_mutex_lock(&oq->oqlock);
-      XTAILQ_INSERT_TAIL(&oq->outs, oput, q);
-      pthread_mutex_unlock(&oq->oqlock);
-    }
-  }
+  /* allocate new handle */
+  rv = HG_Create(oset->mctx, oq->dst, oset->rpcid, &newhand);
   mlog(SHUF_CALL, "forward_now: output=%p rnk=[%d.%d] dst=%p hand=%p",
-       oput, oq->grank, oq->subrank, oq->dst, oput->outhand);
+       oput, oq->grank, oq->subrank, oq->dst, newhand);
 
-  /*
-   * if (oput != NULL) then we have a handle and we are on the outs list
-   *                   else no handle, not on the outs list
-   */
-
-  if (oput != NULL) {
-    in.seq = acnt32_incr(sh->seqsrc);
-    mlog(SHUF_D1, "forward_now: HG_Forward seq=%d to [%d,%d] dst=%p", in.seq,
-         oq->grank, oq->subrank, oq->dst);
-    rv = HG_Forward(oput->outhand, forw_cb, oput, &in);
+  /* install in output structure */
+  if (rv == HG_SUCCESS) {
+    pthread_mutex_lock(&oq->oqlock);
+    switch (oput->ostep) {
+      case OSTEP_CANCEL:
+        HG_Destroy(newhand);
+        rv = HG_CANCELED;
+        break;
+      case OSTEP_PREP:
+        oput->outhand = newhand;
+        oput->ostep = OSTEP_SEND;
+        break;
+      default:   /* should never happen */
+        fprintf(stderr, "forward_now: BAD STEP %d\n", oput->ostep);
+        abort();
+    }
+    pthread_mutex_unlock(&oq->oqlock);
   }
 
-  /*
-   * look for error: setup failed || HG_Forward failed
-   */
-  if (oput == NULL || rv != HG_SUCCESS) {
+  if (rv == HG_SUCCESS) {
+    in.seq = acnt32_incr(sh->seqsrc);
+    mlog(SHUF_D1, "forward_now: HG_Forward seq=%d to [%d.%d] dst=%p", in.seq,
+         oq->grank, oq->subrank, oq->dst);
+    rv = HG_Forward(oput->outhand, forw_cb, oput, &in);   /* SEND HERE! */
+  }
+
+  /* look for error (e.g. setup failed or HG_Forward failed) */
+  if (rv != HG_SUCCESS) {
     /*
-     * this is pretty terrible... we've failed to forward our
-     * batch packet.  there is no pretty way to recover from this,
-     * so let's complain loudly that we've dropped data :(
-     * then we move on and try to start something else...
+     * terrible!  we failed to forward.  no pretty way to recover,
+     * we have to drop the data ...
      */
     fprintf(stderr, "shuffler: forward_reqs_now failed (%d)\n", rv);
     mlog(SHUF_CRIT, "forward request failed (%d)!  data likely lost!", rv);
@@ -1756,7 +1804,6 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
     XSIMPLEQ_FOREACH_SAFE(rp, &in.inreqs, next, nrp) {
       free(rp);
     }
-
   }
 
   return(rv);
@@ -1822,6 +1869,7 @@ static hg_return_t forw_cb(const struct hg_cb_info *cbi) {
 static void forw_start_next(struct outqueue *oq, struct output *oput) {
   bool tosend, flush_done, flushloadingnow, empty_outs;
   struct request_queue tosendq;
+  struct output *nxtoput;
   struct req_parent *fq, **fq_end, *parent, *nparent;
   struct request *req;
 
@@ -1916,14 +1964,15 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
     /* this bumps nsending back up if it returns a "tosend" list */
     mlog(SHUF_D1, "forw_start_next: dst=%p, pull req=%p from waitq",
          oq->dst, req);
-    tosend = append_req_to_locked_outqueue(oq->myset, oq, req, &tosendq, false);
+    tosend = append_req_to_locked_outqueue(oq->myset, oq, req,
+                                           &tosendq, &nxtoput, false);
   }
 
   /* if flushing, ensure our req got pushed out */
   if (flushloadingnow && !tosend) {
     mlog(SHUF_D1, "forw_start_next: dst=%p need to push output queue", oq->dst);
     tosend = append_req_to_locked_outqueue(oq->myset, oq, NULL,
-                                           &tosendq, true);
+                                           &tosendq, &nxtoput, true);
     mlog(SHUF_D1, "forw_start_next: after push dst=%p tosend=%d",
          oq->dst, tosend == true);
   }
@@ -1943,11 +1992,8 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
 
   /* if waitq gave us enough to start sending, do it now */
   if (tosend) {
-    /* this will print an warning on failure */
-    mlog(SHUF_D1, "forw_start_next: dst=%p, sending next", oq->dst);
-    (void) forward_reqs_now(&tosendq, oq->myset->shuf, oq->myset, oq);
 
-    /* if we are flushing and drained oqwaitq, start output tracking */
+    /* if flushing and drained oqwaitq, start output tracking before send */
     if (flushloadingnow) {
       pthread_mutex_lock(&oq->oqlock);
       oq->oqflush_output = XTAILQ_LAST(&oq->outs, sending_outputs);
@@ -1961,6 +2007,10 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
       pthread_mutex_unlock(&oq->oqlock);
 
     }
+
+    /* this will print an warning on failure */
+    mlog(SHUF_D1, "forw_start_next: dst=%p, sending next", oq->dst);
+    (void) forward_reqs_now(&tosendq, oq->myset->shuf, oq->myset, oq, nxtoput);
   }
 
   /* if we finished the flush, pass that info upward */
@@ -2403,6 +2453,7 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
   int rv = 0;
   bool tosend;
   struct request_queue tosendq;
+  struct output *oput;
   mlog(UTIL_CALL, "start_qflush: oset=%p, oq=%p rnk=[%d.%d]", oset, oq,
        oq->grank, oq->subrank);
 
@@ -2425,14 +2476,15 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
   }
 
   /* second, flush the loading list (req==NULL in below call) */
-  tosend = append_req_to_locked_outqueue(oset, oq, NULL, &tosendq, true);
+  tosend = append_req_to_locked_outqueue(oset, oq, NULL,
+                                         &tosendq, &oput, true);
 
   /* send?  drop oq lock to be safe since we are calling out to mercury */
   if (tosend) {
     mlog(UTIL_D1, "start_qflush: LOADING FLUSH: oset=%p, oq=%p",
          oset, oq);
     pthread_mutex_unlock(&oq->oqlock);
-    if (forward_reqs_now(&tosendq, sh, oset, oq) != HG_SUCCESS) {
+    if (forward_reqs_now(&tosendq, sh, oset, oq, oput) != HG_SUCCESS) {
       /* XXX: no good recovery from this */
       fprintf(stderr, "shuffler: start_qflush: forward_reqs_now failed?!\n");
     }

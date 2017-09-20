@@ -75,7 +75,7 @@
  */
 
 /*
- * start of logging init stuff
+ * start of logging init and helper stuff
  */
 #include "shuf_mlog.h"
 
@@ -187,6 +187,7 @@ static void shuffler_openlog(int myrank) {
                        lfile, shufcfg.msgbufsz, stderrlog|MLOG_LOGPID, 0);
   if (rv < 0) {
     fprintf(stderr, "shuffler_openlog: failed!  log disabled\n");
+    shufcfg.on = 0;
     goto done;
   }
 
@@ -219,8 +220,31 @@ static void shuffler_closelog() {
     shuf::mlog_close();
 }
 
+static void notify(int lvl, const char *fmt, ...)
+  __attribute__((__format__(__printf__, 2, 3)));
+
 /*
- * end of logging init stuff
+ * notify: helper function that will emit errors to mlog (if
+ * enabled) and fall back to stderr if mlog is not enabled.
+ *
+ * @param lvl the mlog level to use
+ * @param fmt printf-style format
+ * @param ... printf-style args
+ */
+static void notify(int lvl, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  if (MLOG_NEVERLOG == 0 && shufcfg.on) {
+    shuf::vmlog(lvl, fmt, ap);
+  } else {
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, "\n");
+  }
+  va_end(ap);
+}
+
+/*
+ * end of logging init and helper stuff
  */
 
 /*

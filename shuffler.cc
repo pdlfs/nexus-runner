@@ -2646,6 +2646,82 @@ hg_return_t shuffler_recv_stats(shuffler_t sh, hg_uint64_t* local,
 }
 
 /*
+ * statedump_oset: helper fn for shuffler statedump
+ */
+static void statedump_oset(shuffler_t sh, int lvl, const char *name,
+  struct outset *oset) {
+  std::map<hg_addr_t,struct outqueue *>::iterator oqit;
+  struct outqueue *oq;
+  int lck_rv, ql, lsz;
+  struct request *req;
+  struct output *out;
+
+  notify(lvl, "oset %s: run/shut=%d/%d, fl=%d, flcnt=%d", name,
+         oset->nrunning, oset->nshutdown, oset->osetflushing,
+         acnt32_get(oset->oqflush_counter));
+
+  for (oqit = oset->oqs.begin() ; oqit != oset->oqs.end() ; oqit++) {
+    oq = oqit->second;
+    lck_rv = pthread_mutex_trylock(&oq->oqlock);
+
+    ql = oq->oqwaitq.size();
+    notify(lvl, "[%d.%d] waslck=%d, loadsz=%d, nsend=%d, nwait=%d, fl=%d/%d",
+           oq->grank, oq->subrank, lck_rv != 0, oq->loadsize, oq->nsending,
+           ql, oq->oqflushing, oq->oqflush_waitcounter);
+
+    /* sanity checks */
+    lsz = 0;
+    XSIMPLEQ_FOREACH(req, &oq->loading, next) {
+      lsz += req->datalen;
+    }
+    if (lsz != oq->loadsize) {
+      notify(lvl, "[%d.%d] LOADSIZE CHECK FAILED: %d != %d",
+             oq->grank, oq->subrank, lsz, oq->loadsize);
+    }
+
+    lsz = 0;
+    XTAILQ_FOREACH(out, &oq->outs, q) {
+      lsz++;
+    }
+    if (lsz != oq->nsending) {
+      notify(lvl, "[%d.%d] NSENDING CHECK FAILED: %d != %d",
+             oq->grank, oq->subrank, lsz, oq->nsending);
+    }
+
+    if (lck_rv == 0) pthread_mutex_unlock(&oq->oqlock);
+  }
+
+}
+
+/*
+ * shuffler_statedump: dump out current state of shuffle for diagnostics
+ */
+void shuffler_statedump(shuffler_t sh, int tostderr) {
+  int lvl, lck_rv, qsz, wsz;
+
+  dumpstats(sh);   /* dump stats first */
+
+  lvl = SHUF_NOTE;
+  if (tostderr) lvl |= MLOG_STDERR;
+  notify(lvl, "shuffler state dump:");
+  notify(lvl, "rank=%d, disablesend=%d, seqsrc=%d", sh->grank,
+         sh->disablesend, acnt32_get(sh->seqsrc));
+
+  lck_rv = pthread_mutex_trylock(&sh->deliverlock);
+  qsz = sh->deliverq.size();
+  wsz = sh->dwaitq.size();
+  notify(lvl, "dlvr: waslck=%d, wait=%d, inprog=%d, flcnt=%d, run/shut=%d/%d",
+         lck_rv != 0, qsz, wsz, sh->dflush_counter,
+         sh->drunning, sh->dshutdown);
+  if (lck_rv == 0) pthread_mutex_unlock(&sh->deliverlock);
+
+  notify(lvl, "flsh: cur=%p, typ=%d, done=%d", sh->curflush, sh->flushtype,
+         sh->flushdone);
+  statedump_oset(sh, lvl, "local", &sh->localq);
+  statedump_oset(sh, lvl, "remote", &sh->remoteq);
+}
+
+/*
  * shuffler_shutdown: stop all threads, release all memory.
  * does not shutdown mercury (since we didn't start it, nexus did),
  * but mercury should not be restarted once we call this.

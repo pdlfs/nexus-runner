@@ -2708,10 +2708,11 @@ static void statedump_oset(shuffler_t sh, int lvl, const char *name,
         rtime = (time(NULL) - sh->boottime) - parent->timewstart;
       else
         rtime = 0;
-      mlog(SHUF_INFO, 
-           "oqwaitq[%d], refs=%d, hand?=%d, forwrank=%d, seq=%d, time=%d",
-           idx, acnt32_get(parent->nrefs), parent->input != NULL,
-           parent->rpcin_forwrank, parent->rpcin_seq, rtime);
+      mlog(SHUF_INFO,
+      "oqwaitq[%d], %d->%d, refs=%d, hand?=%d, forwrank=%d, seq=%d, time=%d",
+           idx, req->src, req->dst, acnt32_get(parent->nrefs),
+           parent->input != NULL, parent->rpcin_forwrank,
+           parent->rpcin_seq, rtime);
     }
 
     /* sanity checks */
@@ -2784,10 +2785,11 @@ void shuffler_statedump(shuffler_t sh, int tostderr) {
       rtime = (time(NULL) - sh->boottime) - parent->timewstart;
     else
       rtime = 0;
-    mlog(SHUF_INFO, 
-         "dwaitq[%d], refs=%d, hand?=%d, forwrank=%d, seq=%d, time=%d",
-         idx, acnt32_get(parent->nrefs), parent->input != NULL,
-         parent->rpcin_forwrank, parent->rpcin_seq, rtime);
+    mlog(SHUF_INFO,
+         "dwaitq[%d], %d->%d, refs=%d, hand?=%d, forwrank=%d, seq=%d, time=%d",
+         idx, req->src, req->dst, acnt32_get(parent->nrefs),
+         parent->input != NULL, parent->rpcin_forwrank,
+         parent->rpcin_seq, rtime);
   }
 
   if (lck_rv == 0) pthread_mutex_unlock(&sh->deliverlock);

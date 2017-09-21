@@ -40,7 +40,7 @@
 #include <time.h>
 
 #include <map>
-#include <queue>
+#include <deque>
 #include "acnt_wrap.h"
 #include "xqueue.h"
 
@@ -173,7 +173,7 @@ struct outqueue {
   struct sending_outputs outs;      /* outputs currently being sent to dst */
   int nsending;                     /* #of sends in progress for dst */
 
-  std::queue<request *> oqwaitq;    /* if queue full, waitq of reqs */
+  std::deque<request *> oqwaitq;    /* if queue full, waitq of reqs */
 
   /* fields for flushing an output queue */
   int oqflushing;                   /* 1 if oq is flushing */
@@ -266,8 +266,8 @@ struct shuffler {
   /* delivery thread and queue itself */
   pthread_mutex_t deliverlock;      /* locks this block of fields */
   pthread_cond_t delivercv;         /* deliver thread blocks on this */
-  std::queue<request *> deliverq;   /* acked reqs being delivered */
-  std::queue<request *> dwaitq;     /* unacked reqs waiting for deliver */
+  std::deque<request *> deliverq;   /* acked reqs being delivered */
+  std::deque<request *> dwaitq;     /* unacked reqs waiting for deliver */
   int dflush_counter;               /* #of req's flush is waiting for */
   int dshutdown;                    /* to signal dtask to shutdown */
   int drunning;                     /* dtask is valid and running */

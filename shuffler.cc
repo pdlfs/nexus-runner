@@ -829,14 +829,14 @@ static int purge_reqs(struct shuffler *sh) {
   /* clear delivery queues */
   while (!sh->dwaitq.empty()) {
     req = sh->dwaitq.front();
-    sh->dwaitq.pop();
+    sh->dwaitq.pop_front();
     parent_dref_stopwait(sh, req->owner, 1);
     free(req);
     rv++;
   }
   while (!sh->deliverq.empty()) {
     req = sh->dwaitq.front();
-    sh->dwaitq.pop();
+    sh->dwaitq.pop_front();
     free(req);
     rv++;
   }
@@ -884,7 +884,7 @@ static int purge_reqs_outset(struct shuffler *sh, int local) {
    /* zap the wait queue */
     while (!oq->oqwaitq.empty()) {
       req = oq->oqwaitq.front();
-      oq->oqwaitq.pop();
+      oq->oqwaitq.pop_front();
       parent_dref_stopwait(sh, req->owner, 1);
       free(req);
       rv++;
@@ -974,7 +974,7 @@ static void *delivery_main(void *arg) {
     }
 
     /* dispose of the req we just delivered */
-    sh->deliverq.pop();
+    sh->deliverq.pop_front();
     if (req->owner)        /* should never happen */
       notify(DLIV_CRIT, "delivery_main: freeing req with owner!?!");
     free(req);
@@ -986,8 +986,8 @@ static void *delivery_main(void *arg) {
 
     /* move it to deliveryq */
     req = sh->dwaitq.front();
-    sh->dwaitq.pop();
-    sh->deliverq.push(req);     /* deliverq should be full again */
+    sh->dwaitq.pop_front();
+    sh->deliverq.push_back(req); /* deliverq should be full again */
     mlog(DLIV_D1, "promoted %p from dwaitq", req);
 
     /*
@@ -1509,7 +1509,7 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
 
     /* easy!  just queue and wake delivery thread (if needed) */
     mlog(SHUF_D1, "req_to_self: deliverq req=%p qsize=%d", req, qsize);
-    sh->deliverq.push(req);
+    sh->deliverq.push_back(req);
     if (qsize == 0)
       pthread_cond_signal(&sh->delivercv);  /* empty->!empty: wake thread */
 
@@ -1521,7 +1521,7 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
 
     if (rv == HG_SUCCESS) {
       mlog(SHUF_D1, "req_to_self: dwaitq! req=%p parent=%p", req, req->owner);
-      sh->dwaitq.push(req);     /* add req to wait queue */
+      sh->dwaitq.push_back(req); /* add req to wait queue */
       shufmax(&sh->cntdmaxwait, sh->dwaitq.size());
     } else {
       notify(SHUF_CRIT, "shuffler: req_to_self parent init failed (%d)", rv);
@@ -1614,7 +1614,7 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
     if (rv == HG_SUCCESS) {
       mlog(SHUF_D1, "req_via_mercury: oqwaitq, req=%p, parent=%p",
            req, req->owner);
-      oq->oqwaitq.push(req);      /* add req to oq's waitq */
+      oq->oqwaitq.push_back(req); /* add req to oq's waitq */
       shufmax(&oq->cntoqmaxwait, oq->oqwaitq.size());
     } else {
       notify(SHUF_CRIT, "shuffler: req_via_mercury parent init failed (%d)",
@@ -1964,7 +1964,7 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
   fq_end = &fq;
   while (!oq->oqwaitq.empty() && tosend == false) {
     req = oq->oqwaitq.front();
-    oq->oqwaitq.pop();
+    oq->oqwaitq.pop_front();
 
     /* if flushing, see if we pulled the last req of interest */
     if (oq->oqflushing && oq->oqflush_waitcounter > 0) {

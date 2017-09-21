@@ -37,6 +37,8 @@
  * internal data structures for the 3 hop shuffler.
  */
 
+#include <time.h>
+
 #include <map>
 #include <queue>
 #include "acnt_wrap.h"
@@ -138,6 +140,7 @@ struct output {
   hg_handle_t outhand;              /* out handle used with HG_Forward() */
   int ostep;                        /* output step */
   int32_t outseq;                   /* output seq# to use for this output */
+  int32_t timestart;                /* time we started output */
 #define OSTEP_PREP 0                /* prepare, not at forward_reqs_now yet */
 #define OSTEP_SEND 1                /* forward_reqs_now sending */
 #define OSTEP_CANCEL (-1)           /* trying to cancel request */
@@ -249,6 +252,7 @@ struct shuffler {
   int grank;                        /* my global rank */
   char *funname;                    /* strdup'd copy of mercury func. name */
   int disablesend;                  /* disable new sends (for shutdown) */
+  time_t boottime;                  /* time we started */
 
   /* output queues */
   struct outset localq;             /* for na+sm to local procs */

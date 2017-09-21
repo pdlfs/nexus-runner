@@ -658,6 +658,11 @@ shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
   if (!sh->funname || !sh->seqsrc)
     goto err;
   sh->disablesend = 0;
+#ifdef SHUFFLER_COUNT
+  sh->boottime = time(NULL);
+#else
+  sh->boottime = 0;
+#endif
 
   nit = nexus_iter(nxp, 1);
   if (nit == NULL) goto err;
@@ -1730,6 +1735,7 @@ static bool append_req_to_locked_outqueue(struct outset *oset,
   newoutput->oqp = oq;
   newoutput->outhand = NULL;
   newoutput->ostep = OSTEP_PREP;    /* preparing, not sent yet */
+  newoutput->outseq = -1;           /* not available yet */
   XTAILQ_INSERT_TAIL(&oq->outs, newoutput, q);
   *newoutputp = newoutput;
 
@@ -1799,6 +1805,7 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
         oput->outhand = newhand;
         oput->ostep = OSTEP_SEND;
         oput->outseq = acnt32_incr(sh->seqsrc);
+        oput->timestart = (sh->boottime) ? (time(NULL) - sh->boottime) : 0;
 
         /* also init "in" since we are going to forward now */
         in.iseq = oput->outseq;
@@ -2667,6 +2674,7 @@ static void statedump_oset(shuffler_t sh, int lvl, const char *name,
   int lck_rv, ql, lsz;
   struct request *req;
   struct output *out;
+  int32_t rtime;
 
   notify(lvl, "oset %s: run/shut=%d/%d, fl=%d, flcnt=%d", name,
          oset->nrunning, oset->nshutdown, oset->osetflushing,
@@ -2693,6 +2701,15 @@ static void statedump_oset(shuffler_t sh, int lvl, const char *name,
 
     lsz = 0;
     XTAILQ_FOREACH(out, &oq->outs, q) {
+      if (sh->boottime)
+        rtime = (time(NULL) - sh->boottime) - out->timestart;
+      else
+        rtime = 0;
+
+      /* use info for this, since it is more chatty */
+      mlog(SHUF_INFO, "outs[%d] from %d to %d.%d, ostep=%d, oseq=%d, time=%d",
+           lsz, sh->grank, oq->grank, oq->subrank, out->ostep,
+           out->outseq, rtime);
       lsz++;
     }
     if (lsz != oq->nsending) {

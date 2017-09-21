@@ -1798,6 +1798,12 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
       case OSTEP_PREP:
         oput->outhand = newhand;
         oput->ostep = OSTEP_SEND;
+        oput->outseq = acnt32_incr(sh->seqsrc);
+
+        /* also init "in" since we are going to forward now */
+        in.iseq = oput->outseq;
+        in.forwardrank = sh->grank;
+
         break;
       default:   /* should never happen */
         notify(SHUF_CRIT, "forward_now: BAD STEP %d", oput->ostep);
@@ -1807,8 +1813,6 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
   }
 
   if (rv == HG_SUCCESS) {
-    in.iseq = acnt32_incr(sh->seqsrc);
-    in.forwardrank = sh->grank;
     mlog(SHUF_D1, "forward_now: HG_Forward iseq=%d to [%d.%d] dst=%p", in.iseq,
          oq->grank, oq->subrank, oq->dst);
     rv = HG_Forward(oput->outhand, forw_cb, oput, &in);   /* SEND HERE! */

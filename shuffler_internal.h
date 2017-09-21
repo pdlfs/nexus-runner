@@ -120,6 +120,7 @@ struct req_parent {
   int32_t rpcin_seq;                /* saved copy of rpcin.seq */
   int32_t rpcin_forwrank;           /* saved copy of rpcin.forwardrank */
   hg_handle_t input;                /* RPC input, or NULL for app input */
+  int32_t timewstart;               /* time wait started */
   /* next three only used if input == NULL (thus via shuffler_send()) */
   pthread_mutex_t pcvlock;          /* lock for pcv */
   pthread_cond_t pcv;               /* app may block here for flow ctl */

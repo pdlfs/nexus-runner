@@ -300,7 +300,8 @@ static hg_return_t forward_reqs_now(struct request_queue *tosendq,
                                     struct outqueue *oq, struct output *oput);
 static int purge_reqs(struct shuffler *sh);
 static int purge_reqs_outset(struct shuffler *sh, int local);
-static hg_return_t req_parent_init(struct req_parent **parentp,
+static hg_return_t req_parent_init(struct shuffler *sh,
+                                   struct req_parent **parentp,
                                    struct request *req, hg_handle_t input,
                                    rpcin_t *rpcin);
 static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
@@ -1215,13 +1216,15 @@ static void *network_main(void *arg) {
  * note: "parentp" is a pointer to a pointer.  if *parentp is NULL, we
  * will malloc a new req_parent structure.
  *
+ * @param sh the shuffler we are working with
  * @param parentp ptr to ptr to the req_parent to init
  * @param req the request that we are waiting on
  * @param input inbound RPC handle (NULL if we are an app shuffler_send())
  * @param rpcin inbound rpcin_t struct (only used if input != NULL)
  * @return status (normally success)
  */
-static hg_return_t req_parent_init(struct req_parent **parentp,
+static hg_return_t req_parent_init(struct shuffler *sh,
+                                   struct req_parent **parentp,
                                    struct request *req, hg_handle_t input,
                                    rpcin_t *rpcin) {
   struct req_parent *parent;
@@ -1301,6 +1304,7 @@ static hg_return_t req_parent_init(struct req_parent **parentp,
     parent->rpcin_seq = parent->rpcin_forwrank = -1;  /* inited, but !used */
   }
   parent->input = input;
+  parent->timewstart = (sh->boottime) ? (time(NULL) - sh->boottime) : 0;
   parent->need_wakeup = (input == NULL) ? 1 : 0;
   parent->onfq = 0;
   parent->fqnext = NULL;    /* to be safe */
@@ -1517,7 +1521,7 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
 
     /* sad!  we need to block on the waitq for delivery ... */
     shufcount(&sh->cntdwait[input != NULL]);
-    rv = req_parent_init(parentp, req, input, rpcin);
+    rv = req_parent_init(sh, parentp, req, input, rpcin);
 
     if (rv == HG_SUCCESS) {
       mlog(SHUF_D1, "req_to_self: dwaitq! req=%p parent=%p", req, req->owner);
@@ -1609,7 +1613,7 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
 
     /* sad!  we need to block on the output queue till it clears some */
     shufcount(&oq->cntoqwaits[input != NULL]);
-    rv = req_parent_init(parentp, req, input, rpcin);
+    rv = req_parent_init(sh, parentp, req, input, rpcin);
 
     if (rv == HG_SUCCESS) {
       mlog(SHUF_D1, "req_via_mercury: oqwaitq, req=%p, parent=%p",
@@ -2670,9 +2674,11 @@ hg_return_t shuffler_recv_stats(shuffler_t sh, hg_uint64_t* local,
 static void statedump_oset(shuffler_t sh, int lvl, const char *name,
   struct outset *oset) {
   std::map<hg_addr_t,struct outqueue *>::iterator oqit;
-  struct outqueue *oq;
-  int lck_rv, ql, lsz;
+  std::deque<request *>::iterator reqit;
   struct request *req;
+  struct req_parent *parent;
+  struct outqueue *oq;
+  int lck_rv, ql, idx, lsz;
   struct output *out;
   int32_t rtime;
 
@@ -2688,6 +2694,25 @@ static void statedump_oset(shuffler_t sh, int lvl, const char *name,
     notify(lvl, "[%d.%d] waslck=%d, loadsz=%d, nsend=%d, nwait=%d, fl=%d/%d",
            oq->grank, oq->subrank, lck_rv != 0, oq->loadsize, oq->nsending,
            ql, oq->oqflushing, oq->oqflush_waitcounter);
+
+    for (idx = 0, reqit = oq->oqwaitq.begin() ;
+         reqit != oq->oqwaitq.end() ; reqit++, idx++) {
+      req = *reqit;
+      parent = req->owner;
+
+      if (parent == NULL) {
+        mlog(SHUF_INFO, "oqwaitq[%d] req %p with NULL PARENT?", idx, req);
+        continue;
+      }
+      if (sh->boottime)
+        rtime = (time(NULL) - sh->boottime) - parent->timewstart;
+      else
+        rtime = 0;
+      mlog(SHUF_INFO, 
+           "oqwaitq[%d], refs=%d, hand?=%d, forwrank=%d, seq=%d, time=%d",
+           idx, acnt32_get(parent->nrefs), parent->input != NULL,
+           parent->rpcin_forwrank, parent->rpcin_seq, rtime);
+    }
 
     /* sanity checks */
     lsz = 0;
@@ -2726,7 +2751,10 @@ static void statedump_oset(shuffler_t sh, int lvl, const char *name,
  * shuffler_statedump: dump out current state of shuffle for diagnostics
  */
 void shuffler_statedump(shuffler_t sh, int tostderr) {
-  int lvl, lck_rv, qsz, wsz;
+  int lvl, lck_rv, qsz, wsz, idx, rtime;
+  std::deque<request *>::iterator reqit;
+  struct request *req;
+  struct req_parent *parent;
 
   dumpstats(sh);   /* dump stats first */
 
@@ -2742,6 +2770,26 @@ void shuffler_statedump(shuffler_t sh, int tostderr) {
   notify(lvl, "dlvr: waslck=%d, wait=%d, inprog=%d, flcnt=%d, run/shut=%d/%d",
          lck_rv != 0, qsz, wsz, sh->dflush_counter,
          sh->drunning, sh->dshutdown);
+
+  for (idx = 0, reqit = sh->dwaitq.begin() ;
+       reqit != sh->dwaitq.end() ; reqit++, idx++) {
+    req = *reqit;
+    parent = req->owner;
+
+    if (parent == NULL) {
+      mlog(SHUF_INFO, "dwaitq[%d] req %p with NULL PARENT?", idx, req);
+      continue;
+    }
+    if (sh->boottime)
+      rtime = (time(NULL) - sh->boottime) - parent->timewstart;
+    else
+      rtime = 0;
+    mlog(SHUF_INFO, 
+         "dwaitq[%d], refs=%d, hand?=%d, forwrank=%d, seq=%d, time=%d",
+         idx, acnt32_get(parent->nrefs), parent->input != NULL,
+         parent->rpcin_forwrank, parent->rpcin_seq, rtime);
+  }
+
   if (lck_rv == 0) pthread_mutex_unlock(&sh->deliverlock);
 
   notify(lvl, "flsh: cur=%p, typ=%d, done=%d", sh->curflush, sh->flushtype,

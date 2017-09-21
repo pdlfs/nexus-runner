@@ -302,13 +302,13 @@ static int purge_reqs(struct shuffler *sh);
 static int purge_reqs_outset(struct shuffler *sh, int local);
 static hg_return_t req_parent_init(struct req_parent **parentp,
                                    struct request *req, hg_handle_t input,
-                                   int32_t rpcin_seq);
+                                   rpcin_t *rpcin);
 static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
-                               hg_handle_t input, int32_t in_seq,
+                               hg_handle_t input, rpcin_t *rpcin,
                                struct req_parent **parentp);
 static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
                                    struct outqueue *oq, struct request *req,
-                                   hg_handle_t input, int32_t in_seq,
+                                   hg_handle_t input, rpcin_t *rpcin,
                                    struct req_parent **parentp);
 static void parent_dref_stopwait(struct shuffler *sh, struct req_parent *parent,
                                  int abort);
@@ -358,8 +358,10 @@ static hg_return_t hg_proc_rpcin_t(hg_proc_t proc, void *data) {
     XSIMPLEQ_INIT(&struct_data->inreqs);
   }
 
-  ret = hg_proc_hg_int32_t(proc, &struct_data->seq);
-  procheck(ret, "Proc err seq");
+  ret = hg_proc_hg_int32_t(proc, &struct_data->iseq);
+  procheck(ret, "Proc err iseq");
+  ret = hg_proc_hg_int32_t(proc, &struct_data->forwardrank);
+  procheck(ret, "Proc err forwardrank");
 
   if (op == HG_ENCODE) {   /* serialize list to the proc */
     cnt = 0;
@@ -440,9 +442,9 @@ static hg_return_t hg_proc_rpcout_t(hg_proc_t proc, void *data) {
     mlog(UTIL_CALL, "hg_proc_rpcout_t proc=%p, op=%d", proc,
          hg_proc_get_op(proc));
 
-    ret = hg_proc_hg_int32_t(proc, &struct_data->seq);
-    procheck(ret, "Proc err seq");
-    ret = hg_proc_hg_int32_t(proc, &struct_data->from);
+    ret = hg_proc_hg_int32_t(proc, &struct_data->oseq);
+    procheck(ret, "Proc err oseq");
+    ret = hg_proc_hg_int32_t(proc, &struct_data->respondrank);
     procheck(ret, "Proc err src");
     ret = hg_proc_hg_int32_t(proc, &struct_data->ret);
     procheck(ret, "Proc err ret");
@@ -1102,8 +1104,8 @@ static void parent_stopwait(struct shuffler *sh, struct req_parent *parent,
    * of the req_parent (we have the only reference to it now, so we
    * can just free it).
    */
-  reply.seq = parent->rpcin_seq;
-  reply.from = sh->grank;
+  reply.oseq = parent->rpcin_seq;
+  reply.respondrank = sh->grank;
   reply.ret = parent->ret;
 
   /* only respond if we are not aborting */
@@ -1199,7 +1201,7 @@ static void *network_main(void *arg) {
  * req_parent_init: helper function called when we need to attach a
  * req to an init'd req_parent structure.   if the structure is already
  * init'd, we just bump the req_parent's reference count and set the
- * req's owner.   otherwise, we are starting a new req_parent.
+ * req's owner.   otherwise, we are starting a 0ew req_parent.
  * this happens when we send a req on a full queue and need to wait
  * on a waitq or on dwaitq.  it also happens when we recv an inbound
  * RPC handle (i.e. input != NULL) that contains a req that needs to
@@ -1211,12 +1213,12 @@ static void *network_main(void *arg) {
  * @param parentp ptr to ptr to the req_parent to init
  * @param req the request that we are waiting on
  * @param input inbound RPC handle (NULL if we are an app shuffler_send())
- * @param rpcin_seq inbound seq# (only used if input != NULL)
+ * @param rpcin inbound rpcin_t struct (only used if input != NULL)
  * @return status (normally success)
  */
 static hg_return_t req_parent_init(struct req_parent **parentp,
                                    struct request *req, hg_handle_t input,
-                                   int32_t rpcin_seq) {
+                                   rpcin_t *rpcin) {
   struct req_parent *parent;
 
   parent = *parentp;
@@ -1287,7 +1289,12 @@ static hg_return_t req_parent_init(struct req_parent **parentp,
    */
   acnt32_set(parent->nrefs, 2);
   parent->ret = HG_SUCCESS;
-  parent->rpcin_seq = rpcin_seq;
+  if (rpcin) {
+    parent->rpcin_seq = rpcin->iseq;
+    parent->rpcin_forwrank = rpcin->forwardrank;
+  } else {
+    parent->rpcin_seq = parent->rpcin_forwrank = -1;  /* inited, but !used */
+  }
   parent->input = input;
   parent->need_wakeup = (input == NULL) ? 1 : 0;
   parent->onfq = 0;
@@ -1361,7 +1368,7 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
     parent = &parent_store;
     parent->nrefs = NULL;
     mlog(CLNT_D1, "shuffler_send: req=%p to self", req);
-    rv = req_to_self(sh, req, NULL, 0, &parent);  /* can block */
+    rv = req_to_self(sh, req, NULL, NULL, &parent);  /* can block */
     return(rv);
   }
 
@@ -1395,7 +1402,7 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
 
   parent = &parent_store;
   parent->nrefs = NULL;
-  rv = req_via_mercury(sh, oset, oq, req, NULL, 0, &parent);  /* can block */
+  rv = req_via_mercury(sh, oset, oq, req, NULL, NULL, &parent); /* can block */
 
   return(rv);
 }
@@ -1476,12 +1483,12 @@ void drop_reqs(struct request **reqp, struct request_queue *reqq,
  * @param sh the shuffler involved
  * @param req the request to send/forward to self
  * @param input the inbound handle that generated the req
- * @param in_seq the rcpin.seq value of the inbound req
+ * @param rpcin ptr to the rcpin value of the inbound req (input != NULL case)
  * @param parentp parent ptr (will allocate a new one if needed)
  * @return status
  */
 static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
-                               hg_handle_t input, int32_t in_seq,
+                               hg_handle_t input, rpcin_t *rpcin,
                                struct req_parent **parentp) {
   hg_return_t rv = HG_SUCCESS;
   int qsize, needwait;
@@ -1505,7 +1512,7 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
 
     /* sad!  we need to block on the waitq for delivery ... */
     shufcount(&sh->cntdwait[input != NULL]);
-    rv = req_parent_init(parentp, req, input, in_seq);
+    rv = req_parent_init(parentp, req, input, rpcin);
 
     if (rv == HG_SUCCESS) {
       mlog(SHUF_D1, "req_to_self: dwaitq! req=%p parent=%p", req, req->owner);
@@ -1563,13 +1570,13 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
  * @param oq the output queue to use
  * @param req the request to send
  * @param input input RPC handle (null if via app shuffler_send call)
- * @param in_seq if input!=NULL, seq of inbound RPC msg
+ * @param rpcin ptr to the rcpin value of the inbound req (input != NULL case)
  * @param parentp parent ptr (will allocate a new one if needed)
  * @return status, normally success
  */
 static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
                                    struct outqueue *oq, struct request *req,
-                                   hg_handle_t input, int32_t in_seq,
+                                   hg_handle_t input, rpcin_t *rpcin,
                                    struct req_parent **parentp) {
   hg_return_t rv = HG_SUCCESS;
   int needwait;
@@ -1597,7 +1604,7 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
 
     /* sad!  we need to block on the output queue till it clears some */
     shufcount(&oq->cntoqwaits[input != NULL]);
-    rv = req_parent_init(parentp, req, input, in_seq);
+    rv = req_parent_init(parentp, req, input, rpcin);
 
     if (rv == HG_SUCCESS) {
       mlog(SHUF_D1, "req_via_mercury: oqwaitq, req=%p, parent=%p",
@@ -1800,8 +1807,9 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
   }
 
   if (rv == HG_SUCCESS) {
-    in.seq = acnt32_incr(sh->seqsrc);
-    mlog(SHUF_D1, "forward_now: HG_Forward seq=%d to [%d.%d] dst=%p", in.seq,
+    in.iseq = acnt32_incr(sh->seqsrc);
+    in.forwardrank = sh->grank;
+    mlog(SHUF_D1, "forward_now: HG_Forward iseq=%d to [%d.%d] dst=%p", in.iseq,
          oq->grank, oq->subrank, oq->dst);
     rv = HG_Forward(oput->outhand, forw_cb, oput, &in);   /* SEND HERE! */
   }
@@ -1861,7 +1869,7 @@ static hg_return_t forw_cb(const struct hg_cb_info *cbi) {
     } else {
       if (out.ret != HG_SUCCESS) {
         notify(SHUF_CRIT, "shuffler: forw_cb: RPC %d failed (%d)",
-          out.seq, out.ret);
+          out.oseq, out.ret);
       }
       HG_Free_output(hand, &out);
     }
@@ -2044,7 +2052,6 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
  * to their next hop.  we'll allocate a req_parent to own any req that
  * gets placed on a waitq.  being placed on a waitq will cause our
  * HG_Respond() to be delayed until everything clears the wait queue.
-
  *
  * @param handle the handle from the RPC request
  * @return success
@@ -2099,7 +2106,8 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
     HG_Destroy(handle);
     return(ret);
   }
-  mlog(SHUF_D1, "rpchand: hand=%p in.seq=%d", handle, in.seq);
+  mlog(SHUF_D1, "rpchand: hand=%p in.iseq=%d in.forw=%d",
+       handle, in.iseq, in.forwardrank);
 
   /*
    * now we've got a list of reqs to either deliver local or forward
@@ -2122,7 +2130,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
     if (nexus == NX_DONE) {
 
       mlog(SHUF_D1, "rpchand: req=%p to_self", req);
-      ret = req_to_self(sh, req, handle, in.seq, &parent);
+      ret = req_to_self(sh, req, handle, &in, &parent);
 
       continue;
     }
@@ -2169,7 +2177,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
 
     mlog(SHUF_D1, "rpchand: req=%p via mercury [%d.%d] oq=%p", req,
          oq->grank, oq->subrank, oq);
-    ret = req_via_mercury(sh, outoset, oq, req, handle, in.seq, &parent);
+    ret = req_via_mercury(sh, outoset, oq, req, handle, &in, &parent);
 
   }
 
@@ -2191,8 +2199,8 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
     parent_dref_stopwait(sh, parent, 0);
   } else {
     mlog(SHUF_D1, "rpchand: done! handle=%p, ret=%d", handle, ret);
-    reply.seq = in.seq;
-    reply.from = sh->grank;
+    reply.oseq = in.iseq;
+    reply.respondrank = sh->grank;
     reply.ret = ret;
     (void) HG_Free_input(handle, &in);
     ret = HG_Respond(handle, shuffler_desthand_cb, handle, &reply);

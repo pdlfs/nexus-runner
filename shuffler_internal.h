@@ -82,7 +82,8 @@ XSIMPLEQ_HEAD(request_queue, request);
  * hg_proc_get_size_left()?).
  */
 typedef struct {
-  int32_t seq;                      /* seq# (echoed back), for debugging */
+  int32_t iseq;                     /* seq# (echoed back), for debugging */
+  int32_t forwardrank;              /* rank of proc that initiated rpc */
   struct request_queue inreqs;      /* list of malloc'd requests */
 } rpcin_t;
 
@@ -90,8 +91,8 @@ typedef struct {
  * rpcout_t: return value from the server.
  */
 typedef struct {
-  int32_t seq;                      /* seq# (echoed back), for debugging */
-  int32_t from;                     /* rank of proc sending reply */
+  int32_t oseq;                     /* seq# (echoed back), for debugging */
+  int32_t respondrank;              /* rank of proc sending response */
   int32_t ret;                      /* return value */
 } rpcout_t;
 
@@ -115,6 +116,7 @@ struct req_parent {
   acnt32_t nrefs;                   /* atomic ref counter */
   hg_return_t ret;                  /* return status (HG_SUCCESS, normally) */
   int32_t rpcin_seq;                /* saved copy of rpcin.seq */
+  int32_t rpcin_forwrank;           /* saved copy of rpcin.forwardrank */
   hg_handle_t input;                /* RPC input, or NULL for app input */
   /* next three only used if input == NULL (thus via shuffler_send()) */
   pthread_mutex_t pcvlock;          /* lock for pcv */

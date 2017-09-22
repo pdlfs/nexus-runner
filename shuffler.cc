@@ -1038,7 +1038,11 @@ static void parent_dref_stopwait(struct shuffler *sh, struct req_parent *parent,
 
   /* atomically drop the reference counter and get new value */
   nw = acnt32_decr(parent->nrefs);
-  mlog(SHUF_CALL, "parent_dref_stopwait %p new-nref=%d", parent, nw);
+  if (parent->input)
+    mlog(SHUF_CALL, "parent_dref_stopwait %p R%d-%d new-nref=%d", parent,
+         parent->rpcin_forwrank, parent->rpcin_seq, nw);
+  else
+    mlog(SHUF_CALL, "parent_dref_stopwait %p CLI new-nref=%d", parent, nw);
 
 
   if (nw > 0) {   /* still active reqs, let it keep waiting ... */
@@ -1116,7 +1120,8 @@ static void parent_stopwait(struct shuffler *sh, struct req_parent *parent,
 
   /* only respond if we are not aborting */
   if (!abort) {
-    mlog(SHUF_D1, "parent_stopwait: RPC respond %d %p", reply.ret, parent);
+    mlog(SHUF_D1, "parent_stopwait: RPC respond %d %p R%d-%d",
+         reply.ret, parent, parent->rpcin_forwrank, parent->rpcin_seq);
     rv = HG_Respond(parent->input, shuffler_respond_cb, parent, &reply);
   } else {
     rv = HG_CANCELED;
@@ -1230,7 +1235,11 @@ static hg_return_t req_parent_init(struct shuffler *sh,
   struct req_parent *parent;
 
   parent = *parentp;
-  mlog(SHUF_CALL, "req_parent_init: parent=%p req=%p", parent, req);
+  if (rpcin)
+    mlog(SHUF_CALL, "req_parent_init: parent=%p req=%p R%d-%d", parent, req,
+         rpcin->forwardrank, rpcin->iseq);
+  else
+    mlog(SHUF_CALL, "req_parent_init: parent=%p req=%p CLI", parent, req);
 
   /* can just bump nrefs for RPCs w/previously allocated parent */
   if (input && parent) {
@@ -1502,7 +1511,11 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
   hg_return_t rv = HG_SUCCESS;
   int qsize, needwait;
   struct req_parent *parent;
-  mlog(SHUF_CALL, "req_to_self req=%p, handle=%p", req, input);
+  if (rpcin)
+    mlog(SHUF_CALL, "req_to_self req=%p, handle=%p R%d-%d", req, input,
+         rpcin->forwardrank, rpcin->iseq);
+  else
+    mlog(SHUF_CALL, "req_to_self req=%p, handle=%p CLI", req, input);
 
   pthread_mutex_lock(&sh->deliverlock);
   qsize = sh->deliverq.size();
@@ -1594,8 +1607,13 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
   struct output *oput;
   struct req_parent *parent;
 
-  mlog(SHUF_CALL, "req_via_mercury: req=%p local=%d rnk=[%d.%d] dst=%p", req,
-       oset == &sh->localq, oq->grank, oq->subrank, oq->dst);
+  if (rpcin)
+    mlog(SHUF_CALL, "req_via_mercury: req=%p local=%d r=[%d.%d] dst=%p R%d-%d",
+         req, oset == &sh->localq, oq->grank, oq->subrank, oq->dst,
+         rpcin->forwardrank, rpcin->iseq);
+  else
+    mlog(SHUF_CALL, "req_via_mercury: req=%p local=%d rnk=[%d.%d] dst=%p CLI",
+         req, oset == &sh->localq, oq->grank, oq->subrank, oq->dst);
 
   pthread_mutex_lock(&oq->oqlock);
   needwait = (oq->nsending >= oset->maxrpc);
@@ -1824,8 +1842,8 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
   }
 
   if (rv == HG_SUCCESS) {
-    mlog(SHUF_D1, "forward_now: HG_Forward iseq=%d to [%d.%d] dst=%p", in.iseq,
-         oq->grank, oq->subrank, oq->dst);
+    mlog(SHUF_D1, "forward_now: HG_Forward R%d-%d to [%d.%d] dst=%p",
+         in.forwardrank, in.iseq, oq->grank, oq->subrank, oq->dst);
     rv = HG_Forward(oput->outhand, forw_cb, oput, &in);   /* SEND HERE! */
   }
 
@@ -1912,8 +1930,13 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
   struct req_parent *fq, **fq_end, *parent, *nparent;
   struct request *req;
 
-  mlog(SHUF_CALL, "forw_start_next: to=[%d.%d] dst=%p, oput=%p",
-       oq->grank, oq->subrank, oq->dst, oput);
+  if (oput)
+    mlog(SHUF_CALL, "forw_start_next: to=[%d.%d] dst=%p, oput=%p (R%d-%d)",
+       oq->grank, oq->subrank, oq->dst, oput, oq->myset->shuf->grank,
+       oput->outseq);
+  else
+    mlog(SHUF_CALL, "forw_start_next: to=[%d.%d] dst=%p, oput=null",
+       oq->grank, oq->subrank, oq->dst);
 
   /*
    * get rid of handle if we've got one (XXX should we try and recycle
@@ -1954,7 +1977,8 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
     }
 
     XTAILQ_REMOVE(&oq->outs, oput, q);
-    mlog(SHUF_D1, "forw_start_next: done with output=%p", oput);
+    mlog(SHUF_D1, "forw_start_next: done with output=%p, oseq=%d",
+         oput, oput->outseq);
     free(oput);
     oput = NULL;
   }
@@ -2121,8 +2145,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
     HG_Destroy(handle);
     return(ret);
   }
-  mlog(SHUF_D1, "rpchand: hand=%p in.iseq=%d in.forw=%d",
-       handle, in.iseq, in.forwardrank);
+  mlog(SHUF_D1, "rpchand: hand=%p is R%d-%d", handle, in.forwardrank, in.iseq);
 
   /*
    * now we've got a list of reqs to either deliver local or forward
@@ -2169,8 +2192,9 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
         (nexus == NX_ISLOCAL && islocal)             ||
         (nexus == NX_DESTREP && !islocal)) {
       notify(SHUF_ERR, "rpchand: nexus PANIC!  "
-                       "%d: %d->%d len=%d code=%d, l=%d", sh->grank,
-                       req->src, req->dst, req->datalen, nexus, islocal);
+                       "%d: %d->%d len=%d code=%d, l=%d, R%d-%d", sh->grank,
+                       req->src, req->dst, req->datalen, nexus, islocal,
+                       in.forwardrank, in.iseq);
       drop_reqs(&req, NULL, NULL);  /* no msg, we already printed one */
       continue;
     }
@@ -2708,11 +2732,17 @@ static void statedump_oset(shuffler_t sh, int lvl, const char *name,
         rtime = (time(NULL) - sh->boottime) - parent->timewstart;
       else
         rtime = 0;
-      mlog(SHUF_INFO,
-      "oqwaitq[%d], %d->%d, refs=%d, hand?=%d, forwrank=%d, seq=%d, time=%d",
-           idx, req->src, req->dst, acnt32_get(parent->nrefs),
-           parent->input != NULL, parent->rpcin_forwrank,
-           parent->rpcin_seq, rtime);
+      if (parent->rpcin_forwrank == -1 && parent->rpcin_seq == -1)
+        mlog(SHUF_INFO,
+             "oqwaitq[%d], %d->%d, CLI, refs=%d, hand?=%d, time=%d",
+                idx, req->src, req->dst, acnt32_get(parent->nrefs),
+                parent->input != NULL, rtime);
+      else
+        mlog(SHUF_INFO,
+             "oqwaitq[%d], %d->%d, R%d-%d, refs=%d, hand?=%d, time=%d",
+                idx, req->src, req->dst, parent->rpcin_forwrank,
+                parent->rpcin_seq, acnt32_get(parent->nrefs),
+                parent->input != NULL, rtime);
     }
 
     /* sanity checks */
@@ -2733,9 +2763,9 @@ static void statedump_oset(shuffler_t sh, int lvl, const char *name,
         rtime = 0;
 
       /* use info for this, since it is more chatty */
-      mlog(SHUF_INFO, "outs[%d] from %d to %d.%d, ostep=%d, oseq=%d, time=%d",
-           lsz, sh->grank, oq->grank, oq->subrank, out->ostep,
-           out->outseq, rtime);
+      mlog(SHUF_INFO, "outs[%d] R%d-%d to %d.%d, ostep=%d, time=%d",
+           lsz, sh->grank, out->outseq, oq->grank, oq->subrank,
+           out->ostep, rtime);
       lsz++;
     }
     if (lsz != oq->nsending) {
@@ -2785,11 +2815,18 @@ void shuffler_statedump(shuffler_t sh, int tostderr) {
       rtime = (time(NULL) - sh->boottime) - parent->timewstart;
     else
       rtime = 0;
-    mlog(SHUF_INFO,
-         "dwaitq[%d], %d->%d, refs=%d, hand?=%d, forwrank=%d, seq=%d, time=%d",
-         idx, req->src, req->dst, acnt32_get(parent->nrefs),
-         parent->input != NULL, parent->rpcin_forwrank,
-         parent->rpcin_seq, rtime);
+   if (parent->rpcin_forwrank == -1 && parent->rpcin_seq == -1)
+        mlog(SHUF_INFO,
+             "dwaitq[%d], %d->%d, CLI, refs=%d, hand?=%d, time=%d",
+                idx, req->src, req->dst, acnt32_get(parent->nrefs),
+                parent->input != NULL, rtime);
+      else
+        mlog(SHUF_INFO,
+             "dwaitq[%d], %d->%d, R%d-%d, refs=%d, hand?=%d, time=%d",
+                idx, req->src, req->dst, parent->rpcin_forwrank,
+                parent->rpcin_seq, acnt32_get(parent->nrefs),
+                parent->input != NULL, rtime);
+
   }
 
   if (lck_rv == 0) pthread_mutex_unlock(&sh->deliverlock);

@@ -486,16 +486,13 @@ static void shuffler_outset_discard(struct outset *oset) {
  * @param maxrpc max# of outstanding RPCs allowed
  * @param buftarget try and collect at least this many bytes into batch
  * @param shuf the shuffler that owns this oset
- * @param mcls mercury class
- * @param mctx mercury context
+ * @param hgt the mercury thread that will service us
  * @param nit nexus iterator for map
- * @param rpchand rpc handler function (we register it)
  * @return -1 on error, 0 on success
  */
 static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
-                                shuffler_t shuf, hg_class_t *mcls,
-                                hg_context_t *mctx, nexus_iter_t nit,
-                                hg_rpc_cb_t rpchand) {
+                                shuffler_t shuf, struct hgthread *hgt,
+                                nexus_iter_t nit) {
   int islocal;
   hg_addr_t ha;
   struct outqueue *oq;
@@ -506,14 +503,8 @@ static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
   oset->maxrpc = maxrpc;
   oset->buftarget = buftarget;
   oset->shuf = shuf;
-  oset->mcls = mcls;
-  oset->mctx = mctx;
-  /* save rpcid for the end */
-  oset->nshutdown = 0;
-  oset->nrunning = 0;     /* this indicates that ntask is not valid/init'd */
+  oset->myhgt = hgt;
   /* oqs init'd by ctor */
-  shufzero(&oset->nprogress);
-  shufzero(&oset->ntrigger);
   oset->oqflush_counter = acnt32_alloc();
   if (oset->oqflush_counter == NULL)
     goto err;
@@ -549,21 +540,47 @@ static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
     mlog(UTIL_D1, "init_outset: add oq=%p rnks=%d.%d addr=%p", oq, oq->grank,
          oq->subrank, ha);
   }
-  mlog(UTIL_D1, "init_outset: final size=%zd", oset->oqs.size());
 
-  /* finally we add it to mercury */
-  /* XXX: HG_Register_name can't fail? */
-  /* XXX: no api to unregister an RPC other than shutting down mercury */
-  oset->rpcid = HG_Register_name(mcls, shuf->funname,
-                 hg_proc_rpcin_t, hg_proc_rpcout_t,  rpchand);
-  if (HG_Register_data(mcls, oset->rpcid, oset, NULL) != HG_SUCCESS)
-    goto err;
+  mlog(UTIL_D1, "init_outset: final size=%zd", oset->oqs.size());
   return(0);
 
 err:
   mlog(UTIL_ERR, "init_outset: failed (local=%d)!", islocal);
   shuffler_outset_discard(oset);
   return(-1);
+}
+
+/*
+ * shuffler_init_hgthread: init the hg thread state structure.
+ * allocates rpcid, but does not start threads.
+ *
+ * @param sh the shuffler we are working on
+ * @param hgt the structure to init
+ * @param cls hg class to use
+ * @param ctx hc context to use
+ * @param rpchand rpc handler function (we register it)
+ * @return -1 on error, 0 on success
+*/
+int shuffler_init_hgthread(struct shuffler *sh, struct hgthread *hgt,
+                           hg_class_t *cls, hg_context_t *ctx,
+                           hg_rpc_cb_t rpchand) {
+  /* zero everything.  setting nrunning to 0 indicates ntask is not valid */
+  memset(hgt, 0, sizeof(*hgt));
+  hgt->hgshuf = sh;
+  hgt->mcls = cls;
+  hgt->mctx = ctx;
+
+  /*
+   * register with mercury.  XXX: HG_Register_name() can't fail.
+   * there is no API to unregister an RPC other than shutting down
+   * mercury, so hopefully HG_Register_data() can't fail...
+   */
+  hgt->rpcid = HG_Register_name(cls, sh->funname,
+                 hg_proc_rpcin_t, hg_proc_rpcout_t,  rpchand);
+  if (HG_Register_data(cls, hgt->rpcid, hgt, NULL) != HG_SUCCESS)
+    return(-1);
+
+  return(0);
 }
 
 /*
@@ -666,19 +683,25 @@ shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
   nit = nexus_iter(nxp, 1);
   if (nit == NULL) goto err;
   rv = shuffler_init_outset(&sh->localq, lmaxrpc, lbuftarget, sh,
-          nexus_hgclass_local(nxp), nexus_hgcontext_local(nxp),
-          nit, shuffler_rpchand);
+                            &sh->hgt_local, nit);
   nexus_iter_free(&nit);
   if (rv < 0) goto err;
 
   nit = nexus_iter(nxp, 0);
   if (nit == NULL) goto err;
   rv = shuffler_init_outset(&sh->remoteq, rmaxrpc, rbuftarget, sh,
-          nexus_hgclass_remote(nxp), nexus_hgcontext_remote(nxp),
-          nit, shuffler_rpchand);
+                            &sh->hgt_remote, nit);
   nexus_iter_free(&nit);
   if (rv < 0) goto err;
   acnt32_set(sh->seqsrc, 0);
+
+  /* init hg thread state (but don't start yet).  allocs hg rpcid */
+  rv = shuffler_init_hgthread(sh, &sh->hgt_local, nexus_hgclass_local(nxp),
+                              nexus_hgcontext_local(nxp), shuffler_rpchand);
+  if (rv < 0) goto err;
+  rv = shuffler_init_hgthread(sh, &sh->hgt_remote, nexus_hgclass_remote(nxp),
+                              nexus_hgcontext_remote(nxp), shuffler_rpchand);
+  if (rv < 0) goto err;
 
   sh->deliverq_max = deliverq_max;
   sh->delivercb = delivercb;
@@ -738,24 +761,24 @@ static int start_threads(struct shuffler *sh) {
    sh->drunning = 1;
 
    /* start local na+sm thread */
-  rv = pthread_create(&sh->localq.ntask, NULL,
-                      network_main, (void *)&sh->localq);
+  rv = pthread_create(&sh->hgt_local.ntask, NULL,
+                      network_main, (void *)&sh->hgt_local);
   if (rv != 0) {
      notify(SHUF_CRIT, "shuffler:start_threads: na+sm main failed");
      stop_threads(sh);
      return(-1);
   }
-  sh->localq.nrunning = 1;
+  sh->hgt_local.nrunning = 1;
 
    /* start remote network thread */
-  rv = pthread_create(&sh->remoteq.ntask, NULL,
-                      network_main, (void *)&sh->remoteq);
+  rv = pthread_create(&sh->hgt_remote.ntask, NULL,
+                      network_main, (void *)&sh->hgt_remote);
   if (rv != 0) {
      notify(SHUF_CRIT, "shuffler:start_threads: net main failed");
      stop_threads(sh);
      return(-1);
   }
-  sh->remoteq.nrunning = 1;
+  sh->hgt_remote.nrunning = 1;
 
   mlog(SHUF_CALL, "start_threads SUCCESS!");
   return(0);
@@ -772,19 +795,19 @@ static void stop_threads(struct shuffler *sh) {
   mlog(SHUF_CALL, "stop_threads");
 
   /* stop network */
-  if (sh->remoteq.nrunning) {
+  if (sh->hgt_remote.nrunning) {
     mlog(SHUF_D1, "join remote");
-    sh->remoteq.nshutdown = 1;
-    pthread_join(sh->remoteq.ntask, NULL);
-    sh->remoteq.nshutdown = 0;
+    sh->hgt_remote.nshutdown = 1;
+    pthread_join(sh->hgt_remote.ntask, NULL);
+    sh->hgt_remote.nshutdown = 0;
   }
 
   /* stop na+sm */
-  if (sh->localq.nrunning) {
+  if (sh->hgt_local.nrunning) {
     mlog(SHUF_D1, "join local");
-    sh->localq.nshutdown = 1;
-    pthread_join(sh->localq.ntask, NULL);
-    sh->localq.nshutdown = 0;
+    sh->hgt_local.nshutdown = 1;
+    pthread_join(sh->hgt_local.ntask, NULL);
+    sh->hgt_local.nshutdown = 0;
   }
 
   /* stop delivery */
@@ -820,7 +843,7 @@ static int purge_reqs(struct shuffler *sh) {
   struct request *req;
   mlog(SHUF_CALL, "purge_reqs");
 
-  if (sh->drunning || sh->localq.nrunning || sh->remoteq.nrunning) {
+  if (sh->drunning || sh->hgt_local.nrunning || sh->hgt_remote.nrunning) {
     notify(SHUF_CRIT, "ERROR!  purge_reqs called on active system?!!?");
     abort();   /* should never happen */
   }
@@ -1172,17 +1195,17 @@ static hg_return_t shuffler_respond_cb(const struct hg_cb_info *cbi) {
  */
 
 static void *network_main(void *arg) {
-  struct outset *oset = (struct outset *)arg;
+  struct hgthread *hgt = (struct hgthread *)arg;
   hg_return_t ret;
   unsigned int actual;
 
   mlog(SHUF_CALL, "network_main start (local=%d)",
-       (oset == &oset->shuf->localq));
-  while (oset->nshutdown == 0) {
+       (hgt == &hgt->hgshuf->hgt_local));
+  while (hgt->nshutdown == 0) {
 
     do {
-      ret = HG_Trigger(oset->mctx, 0, 1, &actual); /* triggers all callbacks */
-      shufcount(&oset->ntrigger);
+      ret = HG_Trigger(hgt->mctx, 0, 1, &actual); /* triggers callbacks */
+      shufcount(&hgt->ntrigger);
     } while (ret == HG_SUCCESS && actual);
     if (ret != HG_SUCCESS && ret != HG_TIMEOUT) {
       notify(SHUF_CRIT, "ERROR! calling HG_Trigger returning error: %s(%d)",
@@ -1190,19 +1213,19 @@ static void *network_main(void *arg) {
       abort();
     }
 
-    ret = HG_Progress(oset->mctx, 100);
+    ret = HG_Progress(hgt->mctx, 100);
     if (ret != HG_SUCCESS && ret != HG_TIMEOUT) {
       notify(SHUF_CRIT, "ERROR! calling HG_Progress returning error: %s(%d)",
               HG_Error_to_string(ret), int(ret));
       abort();
     }
 
-    shufcount(&oset->nprogress);
+    shufcount(&hgt->nprogress);
   }
   mlog(SHUF_CALL, "network_main exiting (local=%d)",
-       (oset == &oset->shuf->localq));
+       (hgt == &hgt->hgshuf->hgt_local));
 
-  oset->nrunning = 0;
+  hgt->nrunning = 0;
   return(NULL);
 }
 
@@ -1809,7 +1832,7 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
   XSIMPLEQ_CONCAT(&in.inreqs, tosend);
 
   /* allocate new handle */
-  rv = HG_Create(oset->mctx, oq->dst, oset->rpcid, &newhand);
+  rv = HG_Create(oset->myhgt->mctx, oq->dst, oset->myhgt->rpcid, &newhand);
   mlog(SHUF_CALL, "forward_now: output=%p rnk=[%d.%d] dst=%p hand=%p",
        oput, oq->grank, oq->subrank, oq->dst, newhand);
 
@@ -2095,7 +2118,8 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
  */
 static hg_return_t shuffler_rpchand(hg_handle_t handle) {
   const struct hg_info *hgi;
-  struct outset *inoset, *outoset;
+  struct hgthread *inhgt;
+  struct outset *outoset;
   struct shuffler *sh;
   int islocal, rank;
   hg_return_t ret;
@@ -2116,13 +2140,13 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
     notify(SHUF_CRIT, "shuffler_rpchand: no hg_info (%p)", handle);
     abort();   /* should never happen */
   }
-  inoset = (struct outset *) HG_Registered_data(hgi->hg_class, hgi->id);
-  if (!inoset) {
+  inhgt = (struct hgthread *) HG_Registered_data(hgi->hg_class, hgi->id);
+  if (!inhgt) {
     notify(SHUF_CRIT, "shuffler_rpchand: no registered data (%p)", handle);
     abort();   /* should never happen */
   }
-  sh = inoset->shuf;
-  islocal = (inoset == &sh->localq);
+  sh = inhgt->hgshuf;
+  islocal = (inhgt == &sh->hgt_local);
   mlog(SHUF_D1, "rpchand: got request hand=%p local=%d", handle, islocal);
   if (islocal)
     shufcount(&sh->cntrpcinshm);
@@ -2327,9 +2351,9 @@ static hg_return_t aquire_flush(struct shuffler *sh, struct flush_op *fop,
 
   /* make sure we are still running or we might block forever... */
   if ((type == FLUSH_LOCALQ  &&
-        (sh->localq.nshutdown  != 0 || sh->localq.nrunning  == 0)) ||
+        (sh->hgt_local.nshutdown  != 0 || sh->hgt_local.nrunning  == 0)) ||
       (type == FLUSH_REMOTEQ &&
-        (sh->remoteq.nshutdown != 0 || sh->remoteq.nrunning == 0)) ||
+        (sh->hgt_remote.nshutdown != 0 || sh->hgt_remote.nrunning == 0)) ||
       (type == FLUSH_DELIVER && (sh->dshutdown != 0 || sh->drunning == 0)) ) {
 
     drop_curflush(sh);
@@ -2642,10 +2666,10 @@ static void dumpstats(shuffler_t sh) {
        sh->cntflush[FLUSH_DELIVER], sh->cntflushwait, sh->cntstranded);
   mlog(SHUF_NOTE, "oset-size: local=%ld, remote=%ld", sh->localq.oqs.size(),
        sh->remoteq.oqs.size());
-  mlog(SHUF_NOTE, "localq: nprogress=%d, ntrigger=%d", sh->localq.nprogress,
-       sh->localq.ntrigger);
-  mlog(SHUF_NOTE, "remoteq: nprogress=%d, ntrigger=%d", sh->remoteq.nprogress,
-       sh->remoteq.ntrigger);
+  mlog(SHUF_NOTE, "localq: nprogress=%d, ntrigger=%d", sh->hgt_local.nprogress,
+       sh->hgt_local.ntrigger);
+  mlog(SHUF_NOTE, "remoteq: nprogress=%d, ntrigger=%d", sh->hgt_remote.nprogress,
+       sh->hgt_remote.ntrigger);
   for (lcv = 0; lcv < 2 ; lcv++) {
     mlog(SHUF_NOTE, "outqueue-stats: %s", (lcv == 0) ? "local" : "remote");
     os = o[lcv];
@@ -2705,7 +2729,7 @@ static void statedump_oset(shuffler_t sh, int lvl, const char *name,
   int32_t rtime;
 
   notify(lvl, "oset %s: run/shut=%d/%d, fl=%d, flcnt=%d", name,
-         oset->nrunning, oset->nshutdown, oset->osetflushing,
+         oset->myhgt->nrunning, oset->myhgt->nshutdown, oset->osetflushing,
          acnt32_get(oset->oqflush_counter));
 
   for (oqit = oset->oqs.begin() ; oqit != oset->oqs.end() ; oqit++) {

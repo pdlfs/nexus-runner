@@ -46,6 +46,7 @@
 
 struct req_parent;                  /* forward decl, see below */
 struct outset;                      /* forward decl, see below */
+struct hgthread;                    /* forward decl, see below */
 
 /*
  * request: a structure to describe a single write request.
@@ -203,12 +204,7 @@ struct outset {
 
   /* general state */
   shuffler_t shuf;                  /* shuffler that owns us */
-  hg_class_t *mcls;                 /* mercury class */
-  hg_context_t *mctx;               /* mercury context */
-  hg_id_t rpcid;                    /* id of this RPC */
-  int nshutdown;                    /* to signal ntask to shutdown */
-  int nrunning;                     /* ntask is valid and running */
-  pthread_t ntask;                  /* network thread */
+  struct hgthread *myhgt;           /* mercury thread that services us */
 
   /* a map of all the output queues we known about */
   std::map<hg_addr_t,struct outqueue *> oqs;
@@ -216,12 +212,6 @@ struct outset {
   /* state for tracking a flush op (locked w/"flushlock") */
   int osetflushing;                 /* non-zero if flush in progress */
   acnt32_t oqflush_counter;         /* #qs flushing (hold flushlock to init) */
-
-#ifdef SHUFFLER_COUNT
-  /* stats (only modified/updated by ntask) */
-  int nprogress;                    /* mercury progress fn counter */
-  int ntrigger;                     /* mercury trigger fn counter */
-#endif
 };
 
 /*
@@ -245,6 +235,25 @@ struct flush_op {
 XSIMPLEQ_HEAD(flush_queue, flush_op);
 
 /*
+ * hgthread: state for a mercury progress/trigger thread
+ */
+struct hgthread {
+  struct shuffler *hgshuf;          /* shuffler that owns us */
+  hg_class_t *mcls;                 /* mercury class */
+  hg_context_t *mctx;               /* mercury context */
+  hg_id_t rpcid;                    /* id of this RPC */
+  int nshutdown;                    /* to signal ntask to shutdown */
+  int nrunning;                     /* ntask is valid and running */
+  pthread_t ntask;                  /* network thread */
+
+#ifdef SHUFFLER_COUNT
+  /* stats (only modified/updated by ntask) */
+  int nprogress;                    /* mercury progress fn counter */
+  int ntrigger;                     /* mercury trigger fn counter */
+#endif
+};
+
+/*
  * shuffler: top-level shuffler structure
  */
 struct shuffler {
@@ -254,6 +263,10 @@ struct shuffler {
   char *funname;                    /* strdup'd copy of mercury func. name */
   int disablesend;                  /* disable new sends (for shutdown) */
   time_t boottime;                  /* time we started */
+
+  /* mercury threads */
+  struct hgthread hgt_local;        /* local thread (na+sm) */
+  struct hgthread hgt_remote;       /* network thread (bmi+tcp, etc.) */
 
   /* output queues */
   struct outset localq;             /* for na+sm to local procs */

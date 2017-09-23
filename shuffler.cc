@@ -59,6 +59,17 @@
  *    SRC -na+sm-> SRCREP -network-> DSTREP -na+sm-> DST
  *
  * steps can be skipped (e.g. if SRC == SRCREP, skip the first na+sm hop).
+ * since there are 3 possible hops, there are 8 possible paths (but only
+ * 6 make sense):
+ *    h1 h2 h3
+ *    -  -  -  src==dst, deliver directly
+ *    Y  -  -  dst is local, src==srcrep
+ *    -  Y  -  dst remote, src==srcrep, dst=dstrep
+ *    Y  Y  -  dst remote, dst==dstrep
+ *    -  -  Y  not possible, redundant with "Y - -" (dst local, src==srcrep)
+ *    Y  -  Y  not possible, making 2 local hops is pointless
+ *    -  Y  Y  dst remote, src==srcrep
+ *    Y  Y  Y  dst remote, full 3 hops!
  *
  * 3 threads: na+sm mercury thread, network mercury thread, delivery thread
  * (the final hop is always via the delivery thread)

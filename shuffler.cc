@@ -258,12 +258,14 @@ static void notify(int lvl, const char *fmt, ...) {
 #define shufcount(X)  do { (*X)++; } while (0)
 #define shufcounta(X) do { acnt32_incr(parent->nrefs); } while (0)
 #define shufmax(X,V)  do { if ((V) > (*X)) (*X) = (V); } while (0)
+#define shuftime()    time(NULL)
 #define shufzero(X) do { (*X) = 0; } while (0)
 #else
 #define shufadd(X,V)   /* nothing */
 #define shufcount(X)   /* nothing */
 #define shufcounta(X)  /* nothing */
 #define shufmax(X,V)   /* nothing */
+#define shuftime()     0   /* time disabled, just ret 0 */
 #define shufzero(X)    /* nothing */
 #endif
 
@@ -659,11 +661,7 @@ shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
   if (!sh->funname || !sh->seqsrc)
     goto err;
   sh->disablesend = 0;
-#ifdef SHUFFLER_COUNT
-  sh->boottime = time(NULL);
-#else
-  sh->boottime = 0;
-#endif
+  sh->boottime = shuftime();
 
   nit = nexus_iter(nxp, 1);
   if (nit == NULL) goto err;
@@ -1313,7 +1311,7 @@ static hg_return_t req_parent_init(struct shuffler *sh,
     parent->rpcin_seq = parent->rpcin_forwrank = -1;  /* inited, but !used */
   }
   parent->input = input;
-  parent->timewstart = (sh->boottime) ? (time(NULL) - sh->boottime) : 0;
+  parent->timewstart = shuftime() - sh->boottime;
   parent->need_wakeup = (input == NULL) ? 1 : 0;
   parent->onfq = 0;
   parent->fqnext = NULL;    /* to be safe */
@@ -1827,7 +1825,7 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
         oput->outhand = newhand;
         oput->ostep = OSTEP_SEND;
         oput->outseq = acnt32_incr(sh->seqsrc);
-        oput->timestart = (sh->boottime) ? (time(NULL) - sh->boottime) : 0;
+        oput->timestart = shuftime() - sh->boottime;
 
         /* also init "in" since we are going to forward now */
         in.iseq = oput->outseq;
@@ -2729,7 +2727,7 @@ static void statedump_oset(shuffler_t sh, int lvl, const char *name,
         continue;
       }
       if (sh->boottime)
-        rtime = (time(NULL) - sh->boottime) - parent->timewstart;
+        rtime = (shuftime() - sh->boottime) - parent->timewstart;
       else
         rtime = 0;
       if (parent->rpcin_forwrank == -1 && parent->rpcin_seq == -1)
@@ -2758,7 +2756,7 @@ static void statedump_oset(shuffler_t sh, int lvl, const char *name,
     lsz = 0;
     XTAILQ_FOREACH(out, &oq->outs, q) {
       if (sh->boottime)
-        rtime = (time(NULL) - sh->boottime) - out->timestart;
+        rtime = (shuftime() - sh->boottime) - out->timestart;
       else
         rtime = 0;
 
@@ -2812,7 +2810,7 @@ void shuffler_statedump(shuffler_t sh, int tostderr) {
       continue;
     }
     if (sh->boottime)
-      rtime = (time(NULL) - sh->boottime) - parent->timewstart;
+      rtime = (shuftime() - sh->boottime) - parent->timewstart;
     else
       rtime = 0;
    if (parent->rpcin_forwrank == -1 && parent->rpcin_seq == -1)

@@ -312,7 +312,7 @@ static hg_return_t forward_reqs_now(struct request_queue *tosendq,
                                     struct shuffler *sh, struct outset *oset,
                                     struct outqueue *oq, struct output *oput);
 static int purge_reqs(struct shuffler *sh);
-static int purge_reqs_outset(struct shuffler *sh, int local);
+static int purge_reqs_outset(struct shuffler *sh, struct outset *oset);
 static hg_return_t req_parent_init(struct shuffler *sh,
                                    struct req_parent **parentp,
                                    struct request *req, hg_handle_t input,
@@ -468,6 +468,21 @@ done:
 }
 
 /*
+ * outset_typstr: outset type as a string
+ *
+ * @param type the type value
+ * @return type string
+ */
+static const char *outset_typstr(int type) {
+  switch (type) {
+    case SHUFFLER_REMOTE_QUEUES: return("remote");
+    case SHUFFLER_ORIGIN_QUEUES: return("orgin");
+    case SHUFFLER_RELAY_QUEUES:  return("relay");
+  }
+  return("UNKNOWN!");
+}
+
+/*
  * shuffler_outset_discard: free anything that was attached to an outset
  * (e.g. for error recovery, shutdown)
  *
@@ -476,8 +491,7 @@ done:
 static void shuffler_outset_discard(struct outset *oset) {
   std::map<hg_addr_t,struct outqueue *>::iterator oqit;
   struct outqueue *oq;
-  mlog(UTIL_CALL, "shuffler_outset_discard %s",
-       (oset == &oset->shuf->localq) ? "local" : "remote");
+  mlog(UTIL_CALL, "shuffler_outset_discard %s", outset_typstr(oset->settype));
 
   for (oqit = oset->oqs.begin() ; oqit != oset->oqs.end() ; oqit++) {
     oq = oqit->second;
@@ -504,15 +518,26 @@ static void shuffler_outset_discard(struct outset *oset) {
 static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
                                 shuffler_t shuf, struct hgthread *hgt,
                                 nexus_iter_t nit) {
-  int islocal;
+  int stype;
   hg_addr_t ha;
   struct outqueue *oq;
 
-  islocal = (oset == &shuf->localq);
-  mlog(UTIL_CALL, "shuffler_init_outset local=%d", islocal);
+  if (oset == &shuf->remoteq) {
+    stype = SHUFFLER_REMOTE_QUEUES;
+  } else if (oset == &shuf->local_orq) {
+    stype = SHUFFLER_ORIGIN_QUEUES;
+  } else if (oset == &shuf->local_rlq) {
+    stype = SHUFFLER_RELAY_QUEUES;
+  } else {
+    notify(SHUF_CRIT, "init outset with mistmatched pointers?!");
+    abort();    /* should never happen */
+  }
+
+  mlog(UTIL_CALL, "shuffler_init_outset type=%s", outset_typstr(stype));
 
   oset->maxrpc = maxrpc;
   oset->buftarget = buftarget;
+  oset->settype = stype;
   oset->shuf = shuf;
   oset->myhgt = hgt;
   /* oqs init'd by ctor */
@@ -556,7 +581,7 @@ static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
   return(0);
 
 err:
-  mlog(UTIL_ERR, "init_outset: failed (local=%d)!", islocal);
+  mlog(UTIL_ERR, "init_outset: failed (type=%s)!", outset_typstr(stype));
   shuffler_outset_discard(oset);
   return(-1);
 }
@@ -651,8 +676,9 @@ static hg_return_t shuffler_init_flush(struct shuffler *sh) {
  * shuffler_init: init's the shuffler layer.
  */
 shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
-           int lmaxrpc, int lbuftarget, int rmaxrpc, int rbuftarget,
-           int deliverq_max, shuffler_deliver_t delivercb) {
+           int lomaxrpc, int lobuftarget, int lrmaxrpc, int lrbuftarget,
+           int rmaxrpc, int rbuftarget, int deliverq_max,
+           shuffler_deliver_t delivercb) {
   int myrank, lcv, rv;
   shuffler_t sh;
   nexus_iter_t nit;
@@ -660,13 +686,16 @@ shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
   myrank = nexus_global_rank(nxp);
   shuffler_openlog(myrank);
 
-  mlog(SHUF_CALL, "shuffler_init maxrpc(l/r)=%d/%d targ(l/r)=%d/%d dqmax=%d",
-       lmaxrpc, rmaxrpc, lbuftarget, rbuftarget, deliverq_max);
+  mlog(SHUF_CALL,
+  "shuffler_init maxrpc(lo/lr/r)=%d/%d/%d targ(lo/lr/r)=%d/%d/%d dqmax=%d",
+       lomaxrpc, lrmaxrpc, rmaxrpc, lobuftarget, lrbuftarget,
+       rbuftarget, deliverq_max);
 
   sh = new shuffler;    /* aborts w/std::bad_alloc on failure */
 
   /* make sure these oqflush_counters are not pointing at garbage */
-  sh->localq.oqflush_counter = NULL;
+  sh->local_orq.oqflush_counter = NULL;
+  sh->local_rlq.oqflush_counter = NULL;
   sh->remoteq.oqflush_counter = NULL;
 
   sh->grank = myrank;
@@ -693,7 +722,14 @@ shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
 
   nit = nexus_iter(nxp, 1);
   if (nit == NULL) goto err;
-  rv = shuffler_init_outset(&sh->localq, lmaxrpc, lbuftarget, sh,
+  rv = shuffler_init_outset(&sh->local_orq, lomaxrpc, lobuftarget, sh,
+                            &sh->hgt_local, nit);
+  nexus_iter_free(&nit);
+  if (rv < 0) goto err;
+
+  nit = nexus_iter(nxp, 1);
+  if (nit == NULL) goto err;
+  rv = shuffler_init_outset(&sh->local_rlq, lrmaxrpc, lrbuftarget, sh,
                             &sh->hgt_local, nit);
   nexus_iter_free(&nit);
   if (rv < 0) goto err;
@@ -743,7 +779,8 @@ shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
 
 err:
   mlog(SHUF_D1, "shuffler_init: FAILED!!!");
-  shuffler_outset_discard(&sh->localq);     /* ensures maps are empty */
+  shuffler_outset_discard(&sh->local_orq);     /* ensures maps are empty */
+  shuffler_outset_discard(&sh->local_rlq);
   shuffler_outset_discard(&sh->remoteq);
   if (sh->seqsrc) acnt32_free(&sh->seqsrc);
   if (sh->funname) free(sh->funname);
@@ -875,8 +912,9 @@ static int purge_reqs(struct shuffler *sh) {
   }
 
   /* clear local and remote queeus */
-  rv += purge_reqs_outset(sh, 1);
-  rv += purge_reqs_outset(sh, 0);
+  rv += purge_reqs_outset(sh, &sh->local_orq);
+  rv += purge_reqs_outset(sh, &sh->local_rlq);
+  rv += purge_reqs_outset(sh, &sh->remoteq);
 
   mlog(SHUF_D1, "purg_reqs => result = %d", rv);
   return(rv);
@@ -888,19 +926,16 @@ static int purge_reqs(struct shuffler *sh) {
  * not expecting concurrent access while we are tearing this down).
  *
  * @param sh the shuffler oset belongs to
- * @param local set to select localq, otherwise remoteq
+ * @param oset set to purge
  * @return the number of stranded reqs in the outset
  */
-static int purge_reqs_outset(struct shuffler *sh, int local) {
+static int purge_reqs_outset(struct shuffler *sh, struct outset *oset) {
   int rv = 0;
-  struct outset *oset;
   std::map<hg_addr_t,struct outqueue *>::iterator it;
   struct outqueue *oq;
   struct request *req, *nxt;
   struct output *oput;
-  mlog(UTIL_CALL, "purge_reqs_outset local=%d", local);
-
-  oset = (local) ? &sh->localq : &sh->remoteq;
+  mlog(UTIL_CALL, "purge_reqs_outset type=%s", outset_typstr(oset->settype));
 
   /* need to purge each output queue in the set */
   for (it = oset->oqs.begin() ; it != oset->oqs.end() ; it++) {
@@ -943,7 +978,8 @@ static int purge_reqs_outset(struct shuffler *sh, int local) {
   }
 
   oset->osetflushing = 0;
-  mlog(UTIL_D1, "purge_reqs_outset local=%d =RET=> %d", local, rv);
+  mlog(UTIL_D1, "purge_reqs_outset type=%s =RET=> %d",
+       outset_typstr(oset->settype), rv);
 
   return(rv);
 }
@@ -1436,8 +1472,11 @@ hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
     return(HG_INVALID_PARAM);
   }
 
-  /* need to find correct output queue for dstaddr */
-  oset = (nexus == NX_DESTREP) ? &sh->remoteq : &sh->localq;
+  /*
+   * need to find correct output queue for dstaddr.  for the local
+   * queues, shuffler_send always goes to the origin (local_orq) outset.
+   */
+  oset = (nexus == NX_DESTREP) ? &sh->remoteq : &sh->local_orq;
   it = oset->oqs.find(dstaddr);
   if (it == oset->oqs.end()) {
     /*
@@ -1640,12 +1679,12 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
   struct req_parent *parent;
 
   if (rpcin)
-    mlog(SHUF_CALL, "req_via_mercury: req=%p local=%d r=[%d.%d] dst=%p R%d-%d",
-         req, oset == &sh->localq, oq->grank, oq->subrank, oq->dst,
+    mlog(SHUF_CALL, "req_via_mercury: req=%p type=%s r=[%d.%d] dst=%p R%d-%d",
+         req, outset_typstr(oset->settype), oq->grank, oq->subrank, oq->dst,
          rpcin->forwardrank, rpcin->iseq);
   else
-    mlog(SHUF_CALL, "req_via_mercury: req=%p local=%d rnk=[%d.%d] dst=%p CLI",
-         req, oset == &sh->localq, oq->grank, oq->subrank, oq->dst);
+    mlog(SHUF_CALL, "req_via_mercury: req=%p type=%s rnk=[%d.%d] dst=%p CLI",
+         req, outset_typstr(oset->settype), oq->grank, oq->subrank, oq->dst);
 
   pthread_mutex_lock(&oq->oqlock);
   needwait = (oq->nsending >= oset->maxrpc);
@@ -1844,8 +1883,9 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
 
   /* allocate new handle */
   rv = HG_Create(oset->myhgt->mctx, oq->dst, oset->myhgt->rpcid, &newhand);
-  mlog(SHUF_CALL, "forward_now: output=%p rnk=[%d.%d] dst=%p hand=%p",
-       oput, oq->grank, oq->subrank, oq->dst, newhand);
+  mlog(SHUF_CALL, "forward_now: output=%p rnk=[%d.%d] %s dst=%p hand=%p",
+       oput, oq->grank, oq->subrank, outset_typstr(oq->myset->settype),
+       oq->dst, newhand);
 
   /* install in output structure */
   if (rv == HG_SUCCESS) {
@@ -1963,12 +2003,12 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
   struct request *req;
 
   if (oput)
-    mlog(SHUF_CALL, "forw_start_next: to=[%d.%d] dst=%p, oput=%p (R%d-%d)",
-       oq->grank, oq->subrank, oq->dst, oput, oq->myset->shuf->grank,
-       oput->outseq);
+    mlog(SHUF_CALL, "forw_start_next: to=[%d.%d] %s dst=%p, oput=%p (R%d-%d)",
+       oq->grank, oq->subrank, outset_typstr(oq->myset->settype), oq->dst,
+       oput, oq->myset->shuf->grank, oput->outseq);
   else
-    mlog(SHUF_CALL, "forw_start_next: to=[%d.%d] dst=%p, oput=null",
-       oq->grank, oq->subrank, oq->dst);
+    mlog(SHUF_CALL, "forw_start_next: to=[%d.%d] %s dst=%p, oput=null",
+       oq->grank, oq->subrank, outset_typstr(oq->myset->settype), oq->dst);
 
   /*
    * get rid of handle if we've got one (XXX should we try and recycle
@@ -2233,7 +2273,7 @@ static hg_return_t shuffler_rpchand(hg_handle_t handle) {
     }
 
     /* need to find correct output queue for dstaddr */
-    outoset = (nexus == NX_DESTREP) ? &sh->remoteq : &sh->localq;
+    outoset = (nexus == NX_DESTREP) ? &sh->remoteq : &sh->local_rlq;
     it = outoset->oqs.find(dstaddr);
     if (it == outoset->oqs.end()) {
       /*
@@ -2308,7 +2348,7 @@ static hg_return_t shuffler_desthand_cb(const struct hg_cb_info *cbi) {
  *
  * @param sh the shuffler we are using
  * @param fop the op that needs to flush, has not been init'd
- * @param type the type of flush we are planning to run
+ * @param type the type of flush we are planning to run (FLUSH_*)
  * @param oset the output set (if type is localq or remoteq)
  * @return status (normally success after waiting)
  */
@@ -2334,7 +2374,7 @@ static hg_return_t aquire_flush(struct shuffler *sh, struct flush_op *fop,
     while (fop->status == FLUSHQ_PENDING) {
      mlog(CLNT_D1, "aquire_flush: blocking fop=%p", fop);
       pthread_cond_wait(&fop->flush_waitcv, &sh->flushlock);
-     mlog(CLNT_D1, "aquire_flush: UNblockg fop=%p", fop);
+     mlog(CLNT_D1, "aquire_flush: UNblocking fop=%p", fop);
     }
 
     /* wakeup removed us from pending queue, see if we were canceled */
@@ -2361,7 +2401,7 @@ static hg_return_t aquire_flush(struct shuffler *sh, struct flush_op *fop,
   pthread_mutex_unlock(&sh->flushlock);
 
   /* make sure we are still running or we might block forever... */
-  if ((type == FLUSH_LOCALQ  &&
+  if (( (type == FLUSH_LOCAL_ORQ || type == FLUSH_LOCAL_RLQ)  &&
         (sh->hgt_local.nshutdown  != 0 || sh->hgt_local.nrunning  == 0)) ||
       (type == FLUSH_REMOTEQ &&
         (sh->hgt_remote.nshutdown != 0 || sh->hgt_remote.nrunning == 0)) ||
@@ -2452,27 +2492,42 @@ hg_return_t shuffler_flush_delivery(shuffler_t sh) {
  * output queues are delivered. We make no claims about requests that
  * arrive after the flush has been started.
  */
-hg_return_t shuffler_flush_qs(shuffler_t sh, int islocal) {
+hg_return_t shuffler_flush_qs(shuffler_t sh, int whichqs) {
   struct flush_op fop;
   hg_return_t rv;
-  int type, r;
+  int ftype, r;
   struct outset *oset;
   std::map<hg_addr_t, struct outqueue *>::iterator it;
   struct outqueue *oq;
-  mlog(CLNT_CALL, "shuffler_flush_qs: islocal=%d", islocal);
+  mlog(CLNT_CALL, "shuffler_flush_qs: type=%s", outset_typstr(whichqs));
 
   /* no point trying to flush if we can't send */
   if (sh->disablesend)
     return(HG_CANCELED);
 
-  type = (islocal) ? FLUSH_LOCALQ : FLUSH_REMOTEQ;
-  oset = (islocal) ? &sh->localq  : &sh->remoteq;
+  switch (whichqs) {
+    case SHUFFLER_REMOTE_QUEUES:
+      oset = &sh->remoteq;
+      ftype = FLUSH_REMOTEQ;
+      break;
+    case SHUFFLER_ORIGIN_QUEUES:
+      oset = &sh->local_orq;
+      ftype = FLUSH_LOCAL_ORQ;
+      break;
+    case SHUFFLER_RELAY_QUEUES:
+      oset = &sh->local_rlq;
+      ftype = FLUSH_LOCAL_RLQ;
+      break;
+    default:
+      mlog(CLNT_ERR, "shuffler_flush_qs(%d): bad whichqs", whichqs);
+      return(HG_OTHER_ERROR);
+  }
 
-  rv = aquire_flush(sh, &fop, type, oset);         /* may BLOCK here */
+  rv = aquire_flush(sh, &fop, ftype, oset);         /* may BLOCK here */
   if (rv != HG_SUCCESS) {
     return(rv);
   }
-  mlog(CLNT_D1, "shuffler_flush_qs: islocal=%d AQUIRED!", islocal);
+  mlog(CLNT_D1, "shuffler_flush_qs: type=%s AQUIRED!", outset_typstr(whichqs));
 
   /*
    * we've aquired the flush, including setting oqflushing and
@@ -2502,8 +2557,8 @@ hg_return_t shuffler_flush_qs(shuffler_t sh, int islocal) {
   if (r == 0)
     oset->osetflushing = 0;
 
-  mlog(CLNT_D1, "shuffler_flush_qs: waiting... islocal=%d osetflushing=%d!",
-       islocal, oset->osetflushing);
+  mlog(CLNT_D1, "shuffler_flush_qs: waiting... type=%s osetflushing=%d!",
+       outset_typstr(whichqs), oset->osetflushing);
   while (oset->osetflushing != 0 && fop.status == FLUSHQ_READY) {
     pthread_cond_wait(&fop.flush_waitcv, &sh->flushlock);  /* BLOCK HERE */
   }
@@ -2518,7 +2573,8 @@ hg_return_t shuffler_flush_qs(shuffler_t sh, int islocal) {
   }
   drop_curflush(sh);
   rv = (fop.status == FLUSHQ_CANCEL) ? HG_CANCELED : HG_SUCCESS;
-  mlog(CLNT_D1, "shuffler_flush_qs: done! islocal=%d rv=%d!", islocal, rv);
+  mlog(CLNT_D1, "shuffler_flush_qs: done! type=%s rv=%d!",
+       outset_typstr(whichqs), rv);
   return(rv);
 }
 
@@ -2660,7 +2716,8 @@ static void done_oq_flush(struct outqueue *oq) {
 static void dumpstats(shuffler_t sh) {
 #ifdef SHUFFLER_COUNT
   std::map<hg_addr_t,struct outqueue *>::iterator oqit;
-  struct outset *o[2] = { &sh->localq, &sh->remoteq }, *os;
+  const char *names[3] = { "local_origin", "local_relay", "remote" };
+  struct outset *o[3] = { &sh->local_orq, &sh->local_rlq, &sh->remoteq }, *os;
   struct outqueue *oq;
   int lcv;
 
@@ -2672,17 +2729,20 @@ static void dumpstats(shuffler_t sh) {
        sh->cntdmaxwait);
   mlog(SHUF_NOTE, "recvs: local=%d, network=%d", sh->cntrpcinshm,
        sh->cntrpcinnet);
-  mlog(SHUF_NOTE, "flushes: rem=%d, local=%d, deliver=%d, waits=%d, strand=%d",
-       sh->cntflush[FLUSH_REMOTEQ], sh->cntflush[FLUSH_LOCALQ],
-       sh->cntflush[FLUSH_DELIVER], sh->cntflushwait, sh->cntstranded);
-  mlog(SHUF_NOTE, "oset-size: local=%ld, remote=%ld", sh->localq.oqs.size(),
+  mlog(SHUF_NOTE,
+       "flush: rem=%d, loc_o=%d, loc_r=%d dlvr=%d, waits=%d, strand=%d",
+       sh->cntflush[FLUSH_REMOTEQ], sh->cntflush[FLUSH_LOCAL_ORQ],
+       sh->cntflush[FLUSH_LOCAL_RLQ], sh->cntflush[FLUSH_DELIVER],
+       sh->cntflushwait, sh->cntstranded);
+  mlog(SHUF_NOTE, "oset-size: local_or=%ld, local_rl=%ld, remote=%ld",
+       sh->local_orq.oqs.size(), sh->local_rlq.oqs.size(),
        sh->remoteq.oqs.size());
-  mlog(SHUF_NOTE, "localq: nprogress=%d, ntrigger=%d", sh->hgt_local.nprogress,
-       sh->hgt_local.ntrigger);
-  mlog(SHUF_NOTE, "remoteq: nprogress=%d, ntrigger=%d", sh->hgt_remote.nprogress,
-       sh->hgt_remote.ntrigger);
-  for (lcv = 0; lcv < 2 ; lcv++) {
-    mlog(SHUF_NOTE, "outqueue-stats: %s", (lcv == 0) ? "local" : "remote");
+  mlog(SHUF_NOTE, "local_hgt: nprogress=%d, ntrigger=%d",
+       sh->hgt_local.nprogress, sh->hgt_local.ntrigger);
+  mlog(SHUF_NOTE, "remote_hgt: nprogress=%d, ntrigger=%d",
+       sh->hgt_remote.nprogress, sh->hgt_remote.ntrigger);
+  for (lcv = 0; lcv < 3 ; lcv++) {
+    mlog(SHUF_NOTE, "outqueue-stats: %s", names[lcv]);
     os = o[lcv];
     for (oqit = os->oqs.begin() ; oqit != os->oqs.end() ; oqit++) {
       oq = oqit->second;
@@ -2699,16 +2759,20 @@ static void dumpstats(shuffler_t sh) {
 /*
  * shuffler_send_stats: report number of rpcs sent.
  */
-hg_return_t shuffler_send_stats(shuffler_t sh, hg_uint64_t* local,
-                                hg_uint64_t* remote) {
-  *local = *remote = 0;
+hg_return_t shuffler_send_stats(shuffler_t sh, hg_uint64_t* local_origin,
+                                hg_uint64_t* local_relay, hg_uint64_t* remote) {
+  *local_origin = *local_relay = *remote = 0;
 #ifdef SHUFFLER_COUNT
   std::map<hg_addr_t,struct outqueue *>::iterator oqit;
-  struct outset *o[2] = { &sh->localq, &sh->remoteq };
+  struct outset *o[3] = { &sh->local_orq, &sh->local_rlq, &sh->remoteq }, *os;
+
   for (oqit = o[0]->oqs.begin() ; oqit != o[0]->oqs.end() ; oqit++)
-    *local += static_cast<hg_uint64_t>(oqit->second->cntoqsends);
+    *local_origin += static_cast<hg_uint64_t>(oqit->second->cntoqsends);
   for (oqit = o[1]->oqs.begin() ; oqit != o[1]->oqs.end() ; oqit++)
+    *local_relay += static_cast<hg_uint64_t>(oqit->second->cntoqsends);
+  for (oqit = o[2]->oqs.begin() ; oqit != o[2]->oqs.end() ; oqit++)
     *remote += static_cast<hg_uint64_t>(oqit->second->cntoqsends);
+
 #endif
   return(HG_SUCCESS);
 }
@@ -2866,7 +2930,8 @@ void shuffler_statedump(shuffler_t sh, int tostderr) {
 
   notify(lvl, "flsh: cur=%p, typ=%d, done=%d", sh->curflush, sh->flushtype,
          sh->flushdone);
-  statedump_oset(sh, lvl, "local", &sh->localq);
+  statedump_oset(sh, lvl, "local_orgin", &sh->local_orq);
+  statedump_oset(sh, lvl, "local_relay", &sh->local_rlq);
   statedump_oset(sh, lvl, "remote", &sh->remoteq);
 }
 
@@ -2898,7 +2963,8 @@ hg_return_t shuffler_shutdown(shuffler_t sh) {
   dumpstats(sh);
 
   /* now free remaining structure */
-  shuffler_outset_discard(&sh->localq);     /* ensures maps are empty */
+  shuffler_outset_discard(&sh->local_orq);     /* ensures maps are empty */
+  shuffler_outset_discard(&sh->local_rlq);
   shuffler_outset_discard(&sh->remoteq);
   if (sh->funname) free(sh->funname);
   if (sh->seqsrc) acnt32_free(&sh->seqsrc);

@@ -201,6 +201,7 @@ struct outset {
   /* config */
   int maxrpc;                       /* max# of outstanding sent RPCs */
   int buftarget;                    /* target size of an RPC (in bytes) */
+  int settype;                      /* remote, origin, or relay */
 
   /* general state */
   shuffler_t shuf;                  /* shuffler that owns us */
@@ -269,7 +270,8 @@ struct shuffler {
   struct hgthread hgt_remote;       /* network thread (bmi+tcp, etc.) */
 
   /* output queues */
-  struct outset localq;             /* for na+sm to local procs */
+  struct outset local_orq;          /* for origin/client na+sm to local procs */
+  struct outset local_rlq;          /* for relay na+sm to local procs */
   struct outset remoteq;            /* for network to remote nodes */
   acnt32_t seqsrc;                  /* source for seq# */
 
@@ -295,11 +297,12 @@ struct shuffler {
   int flushtype;                    /* current flush's type (for diag/logs) */
   struct outset *flushoset;         /* flush outset if local/remote */
 /* possible flush types */
-#define FLUSH_NONE    0
-#define FLUSH_LOCALQ  1             /* flushing local na+sm queues */
-#define FLUSH_REMOTEQ 2             /* flushing remote network queues */
-#define FLUSH_DELIVER 3             /* flushing delivery queue */
-#define FLUSH_NTYPES  4             /* number of types */
+#define FLUSH_NONE       0
+#define FLUSH_LOCAL_ORQ  1          /* flushing local origin na+sm queues */
+#define FLUSH_LOCAL_RLQ  2          /* flushing local relay na+sm queues */
+#define FLUSH_REMOTEQ    3          /* flushing remote network queues */
+#define FLUSH_DELIVER    4          /* flushing delivery queue */
+#define FLUSH_NTYPES     5          /* number of types */
 
 #ifdef SHUFFLER_COUNT
   /* lock by flushlock */

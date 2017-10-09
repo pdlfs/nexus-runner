@@ -2024,6 +2024,8 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
 
   if (oq->oqflushing && oq->myset->shuf->curflush == NULL) {
       notify(SHUF_CRIT, "shuffler: forw_start_next: flush sanity check fail!");
+      notify(SHUF_CRIT, "shuffler: oq=%p [%d.%d]", oq, oq->grank, oq->subrank);
+      shuffler_statedump(oq->myset->shuf, 0);
       abort();
   }
 

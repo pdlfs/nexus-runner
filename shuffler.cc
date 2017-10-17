@@ -1588,6 +1588,13 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
   else
     mlog(SHUF_CALL, "req_to_self req=%p, handle=%p CLI", req, input);
 
+  /* this allows delivery to be turned off for debugging... */
+  if (sh->deliverq_max < 0) {
+    mlog(SHUF_D1, "req_to_self: req=%p discarded (delivery disabled)", req);
+    free(req);
+    return(rv);
+  }
+
   pthread_mutex_lock(&sh->deliverlock);
   qsize = sh->deliverq.size();
   needwait = (qsize >= sh->deliverq_max); /* wait if no room in deliverq */

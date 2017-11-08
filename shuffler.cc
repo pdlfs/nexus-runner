@@ -41,6 +41,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/resource.h>
+#include <sys/time.h>
 #include <sys/types.h>
 
 #include <mercury.h>
@@ -258,6 +260,72 @@ static void notify(int lvl, const char *fmt, ...) {
 
 /*
  * end of logging init and helper stuff
+ */
+
+/*
+ * start usage state
+ */
+struct museprobe {
+    int who;                /* flag to getrusage */
+    struct timeval t0, t1;
+    struct rusage r0, r1;
+};
+
+/* load starting values into museprobe */
+static void museprobe_start(struct museprobe *up, int who) {
+    up->who = who;
+    if (gettimeofday(&up->t0, NULL) < 0 || getrusage(up->who, &up->r0) < 0) {
+        notify(SHUF_CRIT, "museprobe_start syscall failed?!");
+        abort();
+    }
+}
+
+
+/* load final values into museprobe */
+static void museprobe_end(struct museprobe *up) {
+    if (gettimeofday(&up->t1, NULL) < 0 || getrusage(up->who, &up->r1) < 0) {
+        notify(SHUF_CRIT, "museprobe_end syscall failed?!");
+        abort();
+    }
+}
+
+/* print museprobe info */
+static void museprobe_print(struct museprobe *up, const char *tag, int n) {
+    char nstr[32];
+    double start, end;
+    double ustart, uend, sstart, send;
+    long nminflt, nmajflt, ninblock, noublock, nnvcsw, nnivcsw;
+
+    if (n >= 0) {
+        snprintf(nstr, sizeof(nstr), "%d: ", n);
+    } else {
+        nstr[0] = '\0';
+    }
+
+    start = up->t0.tv_sec + (up->t0.tv_usec / 1000000.0);
+    end = up->t1.tv_sec + (up->t1.tv_usec / 1000000.0);
+
+    ustart = up->r0.ru_utime.tv_sec + (up->r0.ru_utime.tv_usec / 1000000.0);
+    uend = up->r1.ru_utime.tv_sec + (up->r1.ru_utime.tv_usec / 1000000.0);
+
+    sstart = up->r0.ru_stime.tv_sec + (up->r0.ru_stime.tv_usec / 1000000.0);
+    send = up->r1.ru_stime.tv_sec + (up->r1.ru_stime.tv_usec / 1000000.0);
+
+    nminflt = up->r1.ru_minflt - up->r0.ru_minflt;
+    nmajflt = up->r1.ru_majflt - up->r0.ru_majflt;
+    ninblock = up->r1.ru_inblock - up->r0.ru_inblock;
+    noublock = up->r1.ru_oublock - up->r0.ru_oublock;
+    nnvcsw = up->r1.ru_nvcsw - up->r0.ru_nvcsw;
+    nnivcsw = up->r1.ru_nivcsw - up->r0.ru_nivcsw;
+
+    mlog(SHUF_NOTE, "%s%s: times: wall=%f, usr=%f, sys=%f (secs)\n", nstr, tag,
+        end - start, uend - ustart, send - sstart);
+    mlog(SHUF_NOTE,
+      "%s%s: minflt=%ld, majflt=%ld, inb=%ld, oub=%ld, vcw=%ld, ivcw=%ld\n",
+      nstr, tag, nminflt, nmajflt, ninblock, noublock, nnvcsw, nnivcsw);
+}
+/*
+ * end usage state
  */
 
 /*
@@ -998,7 +1066,14 @@ static void *delivery_main(void *arg) {
   struct shuffler *sh = (struct shuffler *)arg;
   struct request *req;
   struct req_parent *parent;
+  struct museprobe delivery_use;
   mlog(DLIV_CALL, "delivery_main running");
+
+#ifdef RUSAGE_THREAD
+    museprobe_start(&delivery_use, RUSAGE_THREAD);
+#else
+    museprobe_start(&delivery_use, RUSAGE_SELF);
+#endif
 
   pthread_mutex_lock(&sh->deliverlock);
   while (sh->dshutdown == 0) {
@@ -1081,8 +1156,10 @@ static void *delivery_main(void *arg) {
   }
   sh->drunning = 0;
   pthread_mutex_unlock(&sh->deliverlock);
+  museprobe_end(&delivery_use);
 
   mlog(DLIV_CALL, "delivery_main exiting");
+  museprobe_print(&delivery_use, "delivery", -1);
   return(NULL);
 }
 
@@ -1245,6 +1322,13 @@ static void *network_main(void *arg) {
   struct hgthread *hgt = (struct hgthread *)arg;
   hg_return_t ret;
   unsigned int actual;
+  struct museprobe network_use;
+
+#ifdef RUSAGE_THREAD
+    museprobe_start(&network_use, RUSAGE_THREAD);
+#else
+    museprobe_start(&network_use, RUSAGE_SELF);
+#endif
 
   mlog(SHUF_CALL, "network_main start (local=%d)",
        (hgt == &hgt->hgshuf->hgt_local));
@@ -1273,6 +1357,10 @@ static void *network_main(void *arg) {
        (hgt == &hgt->hgshuf->hgt_local));
 
   hgt->nrunning = 0;
+  museprobe_end(&network_use);
+  museprobe_print(&network_use,
+    (hgt == &hgt->hgshuf->hgt_local) ? "local" : "remote", -1);
+
   return(NULL);
 }
 

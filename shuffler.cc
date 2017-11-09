@@ -746,7 +746,7 @@ static hg_return_t shuffler_init_flush(struct shuffler *sh) {
 shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
            int lomaxrpc, int lobuftarget, int lrmaxrpc, int lrbuftarget,
            int rmaxrpc, int rbuftarget, int deliverq_max,
-           shuffler_deliver_t delivercb) {
+           int deliverq_threshold, shuffler_deliver_t delivercb) {
   int myrank, lcv, rv;
   shuffler_t sh;
   nexus_iter_t nit;
@@ -754,10 +754,10 @@ shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
   myrank = nexus_global_rank(nxp);
   shuffler_openlog(myrank);
 
-  mlog(SHUF_CALL,
-  "shuffler_init maxrpc(lo/lr/r)=%d/%d/%d targ(lo/lr/r)=%d/%d/%d dqmax=%d",
+  mlog(SHUF_CALL, "shuffler_init "
+       "maxrpc(lo/lr/r)=%d/%d/%d targ(lo/lr/r)=%d/%d/%d dqmax/th=%d/%d",
        lomaxrpc, lrmaxrpc, rmaxrpc, lobuftarget, lrbuftarget,
-       rbuftarget, deliverq_max);
+       rbuftarget, deliverq_max, deliverq_threshold);
 
   sh = new shuffler;    /* aborts w/std::bad_alloc on failure */
 
@@ -819,6 +819,7 @@ shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
   if (rv < 0) goto err;
 
   sh->deliverq_max = deliverq_max;
+  sh->deliverq_threshold = deliverq_threshold;
   sh->delivercb = delivercb;
   if (pthread_mutex_init(&sh->deliverlock, NULL) != 0)
     goto err;
@@ -1693,8 +1694,11 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
     /* easy!  just queue and wake delivery thread (if needed) */
     mlog(SHUF_D1, "req_to_self: deliverq req=%p qsize=%d", req, qsize);
     sh->deliverq.push_back(req);
-    if (qsize == 0)
-      pthread_cond_signal(&sh->delivercv);  /* empty->!empty: wake thread */
+    /* crossed threshold if the queue size before push_back == threshold */
+    if (qsize == sh->deliverq_threshold) {
+      mlog(SHUF_D1, "req_to_self: need to wake delivery thread");
+      pthread_cond_signal(&sh->delivercv);  /* wake blocked thread */
+    }
 
   } else {
 
@@ -2571,6 +2575,7 @@ hg_return_t shuffler_flush_delivery(shuffler_t sh) {
   sh->dflush_counter = sh->deliverq.size() + sh->dwaitq.size();
   mlog(CLNT_D1, "shuffler_flush_delivery: count=%d", sh->dflush_counter);
   while (sh->dflush_counter > 0 && fop.status == FLUSHQ_READY) {
+    pthread_cond_signal(&sh->delivercv);  /* flush always wakes thread */
     pthread_cond_wait(&fop.flush_waitcv, &sh->deliverlock);  /* BLOCK HERE */
   }
   sh->dflush_counter = 0;

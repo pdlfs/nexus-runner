@@ -271,6 +271,12 @@ struct museprobe {
     struct rusage r0, r1;
 };
 
+#ifdef RUSAGE_THREAD
+#define MUSEPROBE_THREAD RUSAGE_THREAD  /* linux-specific? */
+#else
+#define MUSEPROBE_THREAD RUSAGE_SELF    /* fallback if THREAD not available */
+#endif
+
 /* load starting values into museprobe */
 static void museprobe_start(struct museprobe *up, int who) {
     up->who = who;
@@ -1070,11 +1076,7 @@ static void *delivery_main(void *arg) {
   struct museprobe delivery_use;
   mlog(DLIV_CALL, "delivery_main running");
 
-#ifdef RUSAGE_THREAD
-    museprobe_start(&delivery_use, RUSAGE_THREAD);
-#else
-    museprobe_start(&delivery_use, RUSAGE_SELF);
-#endif
+  museprobe_start(&delivery_use, MUSEPROBE_THREAD);
 
   pthread_mutex_lock(&sh->deliverlock);
   while (sh->dshutdown == 0) {
@@ -1325,11 +1327,7 @@ static void *network_main(void *arg) {
   unsigned int actual;
   struct museprobe network_use;
 
-#ifdef RUSAGE_THREAD
-    museprobe_start(&network_use, RUSAGE_THREAD);
-#else
-    museprobe_start(&network_use, RUSAGE_SELF);
-#endif
+  museprobe_start(&network_use, MUSEPROBE_THREAD);
 
   mlog(SHUF_CALL, "network_main start (local=%d)",
        (hgt == &hgt->hgshuf->hgt_local));

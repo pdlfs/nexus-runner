@@ -185,6 +185,12 @@ struct useprobe {
     struct rusage r0, r1;
 };
 
+#ifdef RUSAGE_THREAD
+#define USEPROBE_THREAD RUSAGE_THREAD   /* linux-specific? */
+#else
+#define USEPROBE_THREAD RUSAGE_SELF     /* fallback if THREAD not available */
+#endif
+
 /* load starting values into useprobe */
 static void useprobe_start(struct useprobe *up, int who) {
     up->who = who;
@@ -721,11 +727,13 @@ int main(int argc, char **argv) {
 void *run_instance(void *arg) {
     struct is *isp = (struct is *)arg;
     int n = isp->n;               /* recover n from isp */
+    struct useprobe instuse;
     nexus_ret_t nrv;
     int flcnt, lcv, sendto, mylen;
     hg_return_t ret;
     uint32_t *msg, msg_store[3];
 
+    useprobe_start(&instuse, USEPROBE_THREAD);
     printf("%d: instance running\n", myrank);
     isa[n].n = n;    /* make it easy to map 'is' structure back to n */
 
@@ -819,6 +827,11 @@ void *run_instance(void *arg) {
 
     nexus_destroy(isa[n].nxp);
     if (msg != msg_store) free(msg);
+
+    useprobe_end(&instuse);
+    if (g.quiet == 0 || g.size <= 4) {
+        useprobe_print(stdout, &instuse, "instance", myrank);
+    }
 
     return(NULL);
 }

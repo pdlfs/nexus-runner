@@ -215,10 +215,8 @@ hg_return_t shuffler_flush_qs(shuffler_t sh, int whichqs);
  * @param sh shuffler service handle
  * @return status
  */
-static hg_return_t shuffler_flush_originqs(shuffler_t sh) {
-  return(shuffler_flush_qs(sh, SHUFFLER_ORIGIN_QUEUES));
-}
-
+#define shuffler_flush_originqs(S) \
+        shuffler_flush_qs((S), SHUFFLER_ORIGIN_QUEUES)
 
 /*
  * shuffler_flush_relayqs: flush relay qs (wrap for shuffler_flush_qs)
@@ -226,9 +224,8 @@ static hg_return_t shuffler_flush_originqs(shuffler_t sh) {
  * @param sh shuffler service handle
  * @return status
  */
-static hg_return_t shuffler_flush_relayqs(shuffler_t sh) {
-  return(shuffler_flush_qs(sh, SHUFFLER_RELAY_QUEUES));
-}
+#define shuffler_flush_relayqs(S) \
+        shuffler_flush_qs((S), SHUFFLER_RELAY_QUEUES)
 
 
 /*
@@ -237,9 +234,8 @@ static hg_return_t shuffler_flush_relayqs(shuffler_t sh) {
  * @param sh shuffler service handle
  * @return status
  */
-static hg_return_t shuffler_flush_remoteqs(shuffler_t sh) {
-  return(shuffler_flush_qs(sh, SHUFFLER_REMOTE_QUEUES));
-}
+#define shuffler_flush_remoteqs(S) \
+        shuffler_flush_qs((S), SHUFFLER_REMOTE_QUEUES)
 
 
 /*

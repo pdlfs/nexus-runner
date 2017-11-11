@@ -1876,7 +1876,6 @@ static bool append_req_to_locked_outqueue(struct outset *oset,
                                           struct request_queue *tosend,
                                           struct output **newoutputp,
                                           bool flushnow) {
-  struct request *rv;
   int newloadsize;
   struct output *newoutput;
   mlog(SHUF_CALL, "append_to_locked: req=%p, dst=%p, flush=%d",
@@ -2556,7 +2555,6 @@ static void drop_curflush(struct shuffler *sh) {
 hg_return_t shuffler_flush_delivery(shuffler_t sh) {
   struct flush_op fop;
   hg_return_t rv;
-  int waitcount;
   mlog(CLNT_CALL, "shuffler_flush_delivery");
 
   rv = aquire_flush(sh, &fop, FLUSH_DELIVER, NULL);    /* may BLOCK here */
@@ -2864,7 +2862,7 @@ hg_return_t shuffler_send_stats(shuffler_t sh, hg_uint64_t* local_origin,
   *local_origin = *local_relay = *remote = 0;
 #ifdef SHUFFLER_COUNT
   std::map<hg_addr_t,struct outqueue *>::iterator oqit;
-  struct outset *o[3] = { &sh->local_orq, &sh->local_rlq, &sh->remoteq }, *os;
+  struct outset *o[3] = { &sh->local_orq, &sh->local_rlq, &sh->remoteq };
 
   for (oqit = o[0]->oqs.begin() ; oqit != o[0]->oqs.end() ; oqit++)
     *local_origin += static_cast<hg_uint64_t>(oqit->second->cntoqsends);

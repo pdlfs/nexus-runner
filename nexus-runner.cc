@@ -728,7 +728,6 @@ void *run_instance(void *arg) {
     struct is *isp = (struct is *)arg;
     int n = isp->n;               /* recover n from isp */
     struct useprobe instuse;
-    nexus_ret_t nrv;
     int flcnt, lcv, sendto, mylen;
     hg_return_t ret;
     uint32_t *msg, msg_store[3];

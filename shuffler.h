@@ -117,9 +117,11 @@
 
 #pragma once
 
-#include <deltafs-nexus/deltafs-nexus_api.h> /* for nexus_ctx_t */
+#include <stddef.h>
+#include <stdint.h>
 
-#include <mercury_types.h>
+#include <deltafs-nexus/deltafs-nexus_api.h> /* for nexus_ctx_t */
+#include <mercury_types.h>                   /* for hg_return_t */
 
 /*
  * shuffler_t: handle to shuffler state (a pointer)
@@ -131,8 +133,8 @@ typedef struct shuffler *shuffler_t;
  * deliver a msg to the DST.  this function may block if the
  * DST is busy/full.
  */
-typedef void (*shuffler_deliver_t)(int src, int dst, int type,
-                                   void *d, int datalen);
+typedef void (*shuffler_deliver_t)(int src, int dst, uint32_t type,
+                                   void *d, uint32_t datalen);
 
 
 /*
@@ -174,8 +176,8 @@ shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
  * @param datalen length of data
  * @return status (success if we've queued the data)
  */
-hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
-                          void *d, int datalen);
+hg_return_t shuffler_send(shuffler_t sh, int dst, uint32_t type,
+                          void *d, uint32_t datalen);
 
 
 /*

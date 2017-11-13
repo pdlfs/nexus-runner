@@ -56,10 +56,10 @@ struct hgthread;                    /* forward decl, see below */
  */
 struct request {
   /* fields that are transmitted over the wire */
-  int datalen;                      /* length of data buffer */
-  int type;                         /* message type (0=normal) */
-  int src;                          /* SRC rank */
-  int dst;                          /* DST rank */
+  uint32_t datalen;                 /* length of data buffer */
+  uint32_t type;                    /* message type (0=normal) */
+  int32_t src;                      /* SRC rank */
+  int32_t dst;                      /* DST rank */
   void *data;                       /* request data */
 
   /* internal fields (not sent over the wire) */
@@ -82,7 +82,7 @@ XSIMPLEQ_HEAD(request_queue, request);
  * rpcin_t: a batch of requests (top-level RPC request structure).
  * when we serialize this, we add a request with datalen/type=zero
  * to mark the end of the list (XXX: safer that trying to use
- * hg_proc_get_size_left()?).
+ * hg_proc_get_size_left()?).   note: seq is signed to match acnt32_t.
  */
 typedef struct {
   int32_t iseq;                     /* seq# (echoed back), for debugging */
@@ -325,4 +325,3 @@ struct shuffler {
 #endif
 
 };
-

@@ -207,7 +207,7 @@ static void useprobe_end(struct useprobe *up) {
 
 /* print useprobe info */
 void useprobe_print(FILE *out, struct useprobe *up, const char *tag, int n) {
-    char nstr[32];
+    char nstr[32], msg[256];
     double start, end;
     double ustart, uend, sstart, send;
     long nminflt, nmajflt, ninblock, noublock, nnvcsw, nnivcsw;
@@ -234,11 +234,11 @@ void useprobe_print(FILE *out, struct useprobe *up, const char *tag, int n) {
     nnvcsw = up->r1.ru_nvcsw - up->r0.ru_nvcsw;
     nnivcsw = up->r1.ru_nivcsw - up->r0.ru_nivcsw;
 
-    fprintf(out, "%s%s: times: wall=%f, usr=%f, sys=%f (secs)\n", nstr, tag,
-        end - start, uend - ustart, send - sstart);
-    fprintf(out,
-      "%s%s: minflt=%ld, majflt=%ld, inb=%ld, oub=%ld, vcw=%ld, ivcw=%ld\n",
-      nstr, tag, nminflt, nmajflt, ninblock, noublock, nnvcsw, nnivcsw);
+    snprintf(msg, sizeof(msg), "%s%s: times: wall=%f, usr=%f, sys=%f (secs)\n"
+        "%s%s: minflt=%ld, majflt=%ld, inb=%ld, oub=%ld, vcw=%ld, ivcw=%ld",
+         nstr, tag, end - start, uend - ustart, send - sstart,
+        nstr, tag, nminflt, nmajflt, ninblock, noublock, nnvcsw, nnivcsw);
+    puts(msg);
 }
 
 /*
@@ -426,7 +426,8 @@ skip_prints:
  * forward prototype decls.
  */
 static void *run_instance(void *arg);   /* run one instance */
-static void do_delivery(int src, int dst, int type, void *d, int datalen);
+static void do_delivery(int src, int dst, uint32_t type,
+    void *d, uint32_t datalen);
 static void do_flush(shuffler_t sh, int verbo);
 
 /*
@@ -844,7 +845,8 @@ void *run_instance(void *arg) {
  * @param d data buffer
  * @param datalen length of data buffer
  */
-static void do_delivery(int src, int dst, int type, void *d, int datalen) {
+static void do_delivery(int src, int dst, uint32_t type,
+    void *d, uint32_t datalen) {
     uint32_t msg[3];
     struct timespec rem;
 

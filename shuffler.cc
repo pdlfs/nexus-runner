@@ -413,7 +413,7 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
  * functions used to serialize/deserialize our RPCs args (e.g. XDR-like fn).
  */
 
-static int32_t zero = 0;   /* for end of list marker */
+static uint32_t zero = 0;   /* for end of list marker */
 
 /*
  * procheck: helper macro to reduce the verbage ...
@@ -436,7 +436,7 @@ static hg_return_t hg_proc_rpcin_t(hg_proc_t proc, void *data) {
   rpcin_t *struct_data = (rpcin_t *) data;
   struct request *rp, *nrp;
   int cnt, lcv;
-  int32_t dlen, typ;
+  uint32_t dlen, typ;
   mlog(UTIL_CALL, "hg_proc_rpcin_t proc=%p op=%d", proc, op);
 
   if (op == HG_FREE)               /* we combine free and err handling below */
@@ -454,9 +454,9 @@ static hg_return_t hg_proc_rpcin_t(hg_proc_t proc, void *data) {
   if (op == HG_ENCODE) {   /* serialize list to the proc */
     cnt = 0;
     XSIMPLEQ_FOREACH(rp, &struct_data->inreqs, next) {
-      ret = hg_proc_hg_int32_t(proc, &rp->datalen);
+      ret = hg_proc_hg_uint32_t(proc, &rp->datalen);
       procheck(ret, "Proc en err datalen");
-      ret = hg_proc_hg_int32_t(proc, &rp->type);
+      ret = hg_proc_hg_uint32_t(proc, &rp->type);
       procheck(ret, "Proc en err type");
       ret = hg_proc_hg_int32_t(proc, &rp->src);
       procheck(ret, "Proc en err src");
@@ -468,7 +468,7 @@ static hg_return_t hg_proc_rpcin_t(hg_proc_t proc, void *data) {
     }
     /* put in the end of list marker */
     for (lcv = 0 ; lcv < 4 ; lcv++) {
-      ret = hg_proc_hg_int32_t(proc, &zero);
+      ret = hg_proc_hg_uint32_t(proc, &zero);
       procheck(ret, "Proc err zero");
     }
     mlog(UTIL_D1, "hg_proc_rpcin_t proc %p, encoded=%d", proc, cnt);
@@ -478,9 +478,9 @@ static hg_return_t hg_proc_rpcin_t(hg_proc_t proc, void *data) {
   /* op == HG_DECODE */
   cnt = 0;
   while (1) {
-    ret = hg_proc_hg_int32_t(proc, &dlen);  /* should err if we use up data */
+    ret = hg_proc_hg_uint32_t(proc, &dlen);  /* should err if we use up data */
     procheck(ret, "Proc de err datalen");
-    ret = hg_proc_hg_int32_t(proc, &typ);
+    ret = hg_proc_hg_uint32_t(proc, &typ);
     procheck(ret, "Proc de err type");
     if (dlen == 0 && typ == 0) break;     /* got end of list marker */
     rp = (request*)malloc(sizeof(*rp) + dlen);
@@ -753,9 +753,21 @@ shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
            int lomaxrpc, int lobuftarget, int lrmaxrpc, int lrbuftarget,
            int rmaxrpc, int rbuftarget, int deliverq_max,
            int deliverq_threshold, shuffler_deliver_t delivercb) {
+  int64_t mask, worldsize;
   int myrank, lcv, rv;
   shuffler_t sh;
   nexus_iter_t nit;
+
+  /*
+   * XXX: MPI ranks are "int" ... we assume a rank fits in an int32_t
+   * in our RPC structs, but we double check it here to be safe.
+   */
+  mask = ~0x7fffffff;
+  worldsize = nexus_global_size(nxp);  /* largest possible rank */
+  if (worldsize & mask) {
+    fprintf(stderr, "shuffler_init: rank bigger than int32_t?\n");
+    abort();
+  }
 
   myrank = nexus_global_rank(nxp);
   shuffler_openlog(myrank);
@@ -1484,8 +1496,8 @@ static hg_return_t req_parent_init(struct shuffler *sh,
 /*
  * shuffler_send: start the sending of a message via the shuffle.
  */
-hg_return_t shuffler_send(shuffler_t sh, int dst, int type,
-                          void *d, int datalen) {
+hg_return_t shuffler_send(shuffler_t sh, int dst, uint32_t type,
+                          void *d, uint32_t datalen) {
   nexus_ret_t nexus;
   int rank;
   hg_addr_t dstaddr;

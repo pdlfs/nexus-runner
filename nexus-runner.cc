@@ -74,6 +74,7 @@
  *  -r n         enable tag suffix with this run number
  *  -R n         only send to rank 'n'
  *  -s maxsndr   rank must be <= maxsndr to send requests
+ *  -T           report extra time/usage stats info for instance thread
  *  -t secs      timeout (alarm)
  *
  * shuffler queue config:
@@ -311,6 +312,7 @@ struct gs {
     int rflagval;            /* value for -r */
     int rcvr_only;           /* only send to this rank (if >0) */
     int maxsndr;             /* rank must be <= maxsndr to send requests */
+    int timestats;           /* report extra time/usage stats for instance */
     int timeout;             /* alarm timeout */
 
     char tagsuffix[64];      /* tag suffix: ninst-count-mode-limit-run# */
@@ -391,6 +393,7 @@ static void usage(const char *msg) {
     fprintf(stderr, "\t-r n        enable tag suffix with this run number\n");
     fprintf(stderr, "\t-R rank     only do sends to this rank\n");
     fprintf(stderr, "\t-s maxsndr  rank must be <= maxsndr to send requests\n");
+    fprintf(stderr, "\t-T          extra time/usage stats for instance\n");
     fprintf(stderr, "\t-t sec      timeout (alarm), in seconds\n");
 
     fprintf(stderr, "shuffler queue config:\n");
@@ -483,7 +486,7 @@ int main(int argc, char **argv) {
     g.max_xtra = g.size;
 
     while ((ch = getopt(argc, argv,
-          "a:B:b:C:c:D:d:E:eF:f:h:I:i:LlM:m:n:O:o:p:qR:r:S:s:t:X:y:")) != -1) {
+        "a:B:b:C:c:D:d:E:eF:f:h:I:i:LlM:m:n:O:o:p:qR:r:S:s:Tt:X:y:")) != -1) {
         switch (ch) {
             case 'a':
                 g.buftarg_origin = atoi(optarg);
@@ -590,6 +593,9 @@ int main(int argc, char **argv) {
                 if (g.maxsndr < 0 || g.maxsndr >= g.size)
                     usage("bad max sender");
                 break;
+            case 'T':
+                g.timestats = 1;
+                break;
             case 't':
                 g.timeout = atoi(optarg);
                 if (g.timeout < 0) usage("bad timeout");
@@ -637,6 +643,7 @@ int main(int argc, char **argv) {
             printf("\trcvr_only  = %d\n", g.rcvr_only);
         printf("\tminsndr    = %d\n", g.minsndr);
         printf("\tmaxsndr    = %d\n", g.maxsndr);
+        printf("\ttimestats  = %s\n", (g.timestats) ? "on" : "off");
         printf("\ttimeout    = %d\n", g.timeout);
         printf("sizes:\n");
         printf("\tbuftarget  = %d / %d / %d (net/origin/relay)\n",
@@ -813,7 +820,15 @@ void *run_instance(void *arg) {
     /* done sending */
     printf("%d: sends complete (nsends=%d,flcnt=%d)!\n", myrank,
            isa[n].nsends, flcnt);
+    if (g.timestats) {
+        useprobe_end(&instuse);
+        useprobe_print(stdout, &instuse, "instance-prebar", myrank);
+    }
     MPI_Barrier(MPI_COMM_WORLD);
+    if (g.timestats) {
+        useprobe_end(&instuse);
+        useprobe_print(stdout, &instuse, "instance-postbar", myrank);
+    }
     if (myrank == 0)
         printf("%d: crossed send barrier.\n", myrank);
 

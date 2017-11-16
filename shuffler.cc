@@ -466,8 +466,8 @@ static hg_return_t hg_proc_rpcin_t(hg_proc_t proc, void *data) {
       procheck(ret, "Proc en err data");
       cnt++;
     }
-    /* put in the end of list marker */
-    for (lcv = 0 ; lcv < 4 ; lcv++) {
+    /* put in the end of list marker (2 uint32_t zeros) */
+    for (lcv = 0 ; lcv < 2 ; lcv++) {
       ret = hg_proc_hg_uint32_t(proc, &zero);
       procheck(ret, "Proc err zero");
     }

@@ -1261,9 +1261,11 @@ static void parent_stopwait(struct shuffler *sh, struct req_parent *parent,
    */
   if (parent->input == NULL) {
     pthread_mutex_lock(&parent->pcvlock);
-    parent->need_wakeup = 0;   /* XXX: needed?  vs. nrefs==0 */
-    mlog(SHUF_D1, "parent_stopwait: wake parent %p", parent);
-    pthread_cond_signal(&parent->pcv);
+    if (parent->need_wakeup) {    /* prob. always true, check to be safe */
+      parent->need_wakeup = 0;
+      pthread_cond_signal(&parent->pcv);
+      mlog(SHUF_D1, "parent_stopwait: wake parent %p", parent);
+    }
     pthread_mutex_unlock(&parent->pcvlock);
     return;
   }
@@ -1481,7 +1483,7 @@ static hg_return_t req_parent_init(struct shuffler *sh,
   }
   parent->input = input;
   parent->timewstart = shuftime() - sh->boottime;
-  parent->need_wakeup = (input == NULL) ? 1 : 0;
+  parent->need_wakeup = 0;
   parent->onfq = 0;
   parent->fqnext = NULL;    /* to be safe */
 
@@ -1735,18 +1737,25 @@ static hg_return_t req_to_self(struct shuffler *sh, struct request *req,
     parent = *parentp;
 
     pthread_mutex_lock(&parent->pcvlock);
-    /* drop extra parent ref created by req_parent_init() before waiting */
-    acnt32_decr(parent->nrefs);
-    while (acnt32_get(parent->nrefs) > 0) {
-      mlog(CLNT_D1, "req_to_self: blocked! req=%p, parent=%p", req, parent);
-      pthread_cond_wait(&parent->pcv, &parent->pcvlock);  /*BLOCK HERE*/
-      mlog(CLNT_D1, "req_to_self: UNblocked! req=%p, parent=%p", req, parent);
+    /*
+     * drop extra parent ref created by req_parent_init() before waiting.
+     * watch out: if other side finishes early, this may be the last ref.
+     */
+    if (acnt32_decr(parent->nrefs) < 1) {
+      mlog(CLNT_D1, "req_to_self: NO block, req=%p, parent=%p", req, parent);
+    } else {
+      parent->need_wakeup = 1;    /* protected by pcvlock */
+      while (parent->need_wakeup) {
+        mlog(CLNT_D1, "req_to_self: blocked! req=%p, parent=%p", req, parent);
+        pthread_cond_wait(&parent->pcv, &parent->pcvlock);  /*BLOCK HERE*/
+        mlog(CLNT_D1, "req_to_self: UNblocked! req=%p, parent=%p", req, parent);
+      }
     }
     pthread_mutex_unlock(&parent->pcvlock);
 
     /*
-     * we are done now, since the thread that woke us up also
-     * should have pulled our req off the dwaitq and put it in
+     * we are done now, since the thread that completed the req
+     * also should have pulled our req off the dwaitq and put it in
      * the delivery queue.
      */
 
@@ -1835,19 +1844,29 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
     parent = *parentp;
 
     pthread_mutex_lock(&parent->pcvlock);
-    /* drop extra parent ref created by req_parent_init() before waiting */
-    acnt32_decr(parent->nrefs);
-    while (acnt32_get(parent->nrefs) > 0) {
-      mlog(CLNT_D1, "req_via_mercury: blocking req=%p, parent=%p", req, parent);
-      pthread_cond_wait(&parent->pcv, &parent->pcvlock);  /* BLOCK HERE */
-      mlog(CLNT_D1, "req_via_mercury: UNblock req=%p, parent=%p", req, parent);
+    /*
+     * drop extra parent ref created by req_parent_init() before waiting.
+     * watch out: if other side finishes early, this may be the last ref.
+     */
+    if (acnt32_decr(parent->nrefs) < 1) {
+      mlog(CLNT_D1, "req_via_mercury: NO block, req=%p, parent=%p",
+           req, parent);
+    } else {
+      parent->need_wakeup = 1;    /* protected by pcvlock */
+      while (parent->need_wakeup) {
+        mlog(CLNT_D1, "req_via_mercury: blocking req=%p, parent=%p",
+             req, parent);
+        pthread_cond_wait(&parent->pcv, &parent->pcvlock);  /* BLOCK HERE */
+        mlog(CLNT_D1, "req_via_mercury: UNblock req=%p, parent=%p",
+             req, parent);
+      }
     }
     pthread_mutex_unlock(&parent->pcvlock);
 
     /*
-     * we are done now, since the thread that woke us up also
-     * should have pulled our req off the waitq and set it up
-     * for sending.
+     * we are done now, since the thread that completed the req
+     * also should have pulled our req off the waitq and set it
+     * up for sending.
      */
 
     acnt32_free(&parent->nrefs);

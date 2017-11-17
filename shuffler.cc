@@ -341,7 +341,7 @@ static void museprobe_print(struct museprobe *up, const char *tag, int n) {
 #ifdef SHUFFLER_COUNT
 #define shufadd(X,V)  do { (*X) += (V); } while (0)
 #define shufcount(X)  do { (*X)++; } while (0)
-#define shufcounta(X) do { acnt32_incr(parent->nrefs); } while (0)
+#define shufcounta(X) do { acnt32_incr(X); } while (0)
 #define shufmax(X,V)  do { if ((V) > (*X)) (*X) = (V); } while (0)
 #define shuftime()    time(NULL)
 #define shufzero(X) do { (*X) = 0; } while (0)

@@ -757,7 +757,8 @@ void *run_instance(void *arg) {
     uint32_t *msg, msg_store[3];
 
     useprobe_start(&instuse, USEPROBE_THREAD);
-    printf("%d: instance running\n", myrank);
+    if (!g.quiet)
+        printf("%d: instance running\n", myrank);
     isa[n].n = n;    /* make it easy to map 'is' structure back to n */
 
     /* setup send buffer based on requested size (-i) */

@@ -652,16 +652,16 @@ static void shuffler_outset_discard(struct outset *oset) {
  * shuffler_init_outset: init an outset (but does not start network thread)
  *
  * @param oset the structure we are init'ing
- * @param maxrpc max# of outstanding RPCs allowed
+ * @param maxoqrpc max# of outstanding RPCs allowed on one oq
  * @param buftarget try and collect at least this many bytes into batch
  * @param shuf the shuffler that owns this oset
  * @param hgt the mercury thread that will service us
  * @param nit nexus iterator for map
  * @return -1 on error, 0 on success
  */
-static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
-                                shuffler_t shuf, struct hgthread *hgt,
-                                nexus_iter_t nit) {
+static int shuffler_init_outset(struct outset *oset, int maxoqrpc,
+                                int buftarget, shuffler_t shuf,
+                                struct hgthread *hgt, nexus_iter_t nit) {
   int stype;
   hg_addr_t ha;
   struct outqueue *oq;
@@ -679,7 +679,7 @@ static int shuffler_init_outset(struct outset *oset, int maxrpc, int buftarget,
 
   mlog(UTIL_CALL, "shuffler_init_outset type=%s", outset_typstr(stype));
 
-  oset->maxrpc = maxrpc;
+  oset->maxoqrpc = maxoqrpc;
   oset->buftarget = buftarget;
   oset->settype = stype;
   oset->shuf = shuf;
@@ -1879,7 +1879,7 @@ static hg_return_t req_via_mercury(struct shuffler *sh, struct outset *oset,
          req, outset_typstr(oset->settype), oq->grank, oq->subrank, oq->dst);
 
   pthread_mutex_lock(&oq->oqlock);
-  needwait = (oq->nsending >= oset->maxrpc);
+  needwait = (oq->nsending >= oset->maxoqrpc);
   tosend = false;
   shufcount(&oq->cntoqreqs[input != NULL]);
 

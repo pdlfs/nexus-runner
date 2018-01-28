@@ -2318,6 +2318,7 @@ static void forw_progress_shufsendq(struct outset *oset) {
     sw->sw_status = SHUFSEND_OKGO;
     pthread_cond_broadcast(&sw->sw_cv);
     pthread_mutex_unlock(&sw->sw_lock);
+    cando--;
   }
   pthread_mutex_unlock(&oset->os_rpclimitlock);
 }

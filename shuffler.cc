@@ -2222,18 +2222,21 @@ static hg_return_t forward_reqs_now(struct request_queue *tosend,
     mlog(SHUF_D1, "forward_now: HG_Forward R%d-%d to [%d.%d] dst=%p cnt=%d",
          in.forwardrank, in.iseq, oq->grank, oq->subrank, oq->dst, cnt);
     rv = HG_Forward(oput->outhand, forw_cb, oput, &in);   /* SEND HERE! */
+
+    if (rv != HG_SUCCESS) {   /* failure to launch, walk back outset_nrpcs */
+      pthread_mutex_lock(&oset->os_rpclimitlock);
+      oset->outset_nrpcs--;
+      pthread_mutex_unlock(&oset->os_rpclimitlock);
+    }
   }
 
-  /* look for error (e.g. setup failed or HG_Forward failed) */
+  /* err? [1] HG_Create failed, [2] got OSTEP_CANCEL, or [3] HG_Forward err */
   if (rv != HG_SUCCESS) {
     /*
      * terrible!  we failed to forward.  no pretty way to recover,
      * we have to drop the data ...
      */
     notify(SHUF_CRIT, "forward request failed (%d)!  data likely lost!", rv);
-    pthread_mutex_lock(&oset->os_rpclimitlock);
-    oset->outset_nrpcs--;
-    pthread_mutex_unlock(&oset->os_rpclimitlock);
     drop_reqs(NULL, &in.inreqs, "forward_reqs_now");
     forw_start_next(oq, oput);
 

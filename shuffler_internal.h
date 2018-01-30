@@ -173,7 +173,7 @@ struct outqueue {
   int loadsize;                     /* size of loading, send when buftarget */
 
   struct sending_outputs outs;      /* outputs currently being sent to dst */
-  int nsending;                     /* #of sends in progress for dst */
+  int nsending;                     /* #of outputs alloc'd for dst */
 
   std::deque<request *> oqwaitq;    /* if queue full, waitq of reqs */
 
@@ -230,7 +230,7 @@ struct outset {
 
   /* shuffler_send() rpc limit */
   pthread_mutex_t os_rpclimitlock;  /* locks next two items */
-  int outset_nrpcs;                 /* total# of running RPCs in all oq's */
+  int outset_nrpcs;                 /* total# of RPCs running in mercury */
   struct sendwaiterlist shufsendq;  /* list of waiting shuffler_send() ops */
 #ifdef SHUFFLER_COUNT
   int os_senderlimit;               /* #of times we hit shufsend_rpclimit */

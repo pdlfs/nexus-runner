@@ -476,8 +476,8 @@ static hg_return_t shuffler_desthand_cb(const struct hg_cb_info *cbi);
 static hg_return_t shuffler_respond_cb(const struct hg_cb_info *cbi);
 static int start_threads(struct shuffler *sh);
 static void stop_threads(struct shuffler *sh);
-static int start_qflush(struct shuffler *sh, struct outset *oset,
-                        struct outqueue *oq);
+static void start_qflush(struct shuffler *sh, struct outset *oset,
+                         struct outqueue *oq);
 
 /*
  * functions used to serialize/deserialize our RPCs args (e.g. XDR-like fn).
@@ -2893,12 +2893,10 @@ hg_return_t shuffler_flush_qs(shuffler_t sh, int whichqs) {
     oq = it->second;
 
     /*
-     * if we start a queue flush on this queue, bump the counter
-     * (keeping track of the number of outqueues being flushed).
+     * if we start a queue flush on oq, this will set oq->oqflushing==1
+     * and add one to oset->oqflush_counter (all while holding oqlock).
      */
-    if (start_qflush(sh, oset, oq)) {
-      acnt32_incr(oset->oqflush_counter);
-    }
+    start_qflush(sh, oset, oq);
   }
 
   /*
@@ -2939,24 +2937,23 @@ hg_return_t shuffler_flush_qs(shuffler_t sh, int whichqs) {
 }
 
 /*
- * start_qflush: start flushing an output queue.  if the queue flush
- * is pending, we return 1.  otherwise 0.   flushing an output queue
- * is a multi-step process.  first we must wait for the waitq to drain.
- * second, if there are any pending buffered reqs in the loading list
- * waiting for enough data to build a batch then we need to stop waiting
- * and send them now.  third, we need to wait for all sending_outputs
- * on oq->outs at the time of the flush to finish.   depending on the
- * state of the queue we may be able to skip some or all of these
- * steps (e.g. if queue empty, then we're done!).
+ * start_qflush: start flushing an output queue if it is not empty.
+ * flushing an output queue is a multi-step process.  first we must
+ * wait for the waitq to drain.  second, if there are any pending
+ * buffered reqs in the loading list waiting for enough data to build
+ * a batch then we need to stop waiting and send them now.  third, we
+ * need to wait for all sending_outputs on oq->outs at the time of the
+ * flush to finish.   depending on the state of the queue we may be
+ * able to skip some or all of these steps (e.g. if the queue is empty,
+ * then we're done!).   if we do start a flush, we'll set oq->oqflushing
+ * and add one to oset->oqflush_counter (while holding the oqlock).
  *
  * @param sh the shuffler we are using
  * @param oset the output set being flushed
  * @param oq the output queue to flush
- * @return 1 if flush is pending, otherwise zero
  */
-static int start_qflush(struct shuffler *sh, struct outset *oset,
+static void start_qflush(struct shuffler *sh, struct outset *oset,
                         struct outqueue *oq) {
-  int rv = 0;
   bool tosend;
   struct request_queue tosendq;
   struct output *oput;
@@ -2975,7 +2972,7 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
     oq->oqflush_waitcounter = oq->oqwaitq.size();
     oq->oqflush_output = NULL;   /* to be safe */
     oq->oqflushing = 1;
-    rv = 1;
+    acnt32_incr(oset->oqflush_counter);
     mlog(UTIL_D1, "start_qflush: WAITQ: oset=%p, oq=%p, waitqcnt=%d",
          oset, oq, oq->oqflush_waitcounter);
     goto done;
@@ -3002,17 +2999,19 @@ static int start_qflush(struct shuffler *sh, struct outset *oset,
     oq->oqflush_waitcounter = 0;
     oq->oqflush_output = XTAILQ_LAST(&oq->outs, sending_outputs);
     oq->oqflushing = 1;
-    rv = 1;
+    acnt32_incr(oset->oqflush_counter);
     mlog(UTIL_D1, "start_qflush: SENDERS: oset=%p, oq=%p, waitfor=%p",
          oset, oq, oq->oqflush_output);
   }
 
 done:
-  if (rv != 0)
+  if (oq->oqflushing != 0)
     shufcount(&oq->cntoqflushes);
+  mlog(UTIL_D1, "start_qflush: oset=%p, oq=%p, flushpending=%d", oset, oq,
+       oq->oqflushing);
   pthread_mutex_unlock(&oq->oqlock);
-  mlog(UTIL_D1, "start_qflush: oset=%p, oq=%p, flushpending=%d", oset, oq, rv);
-  return(rv);
+
+  return;
 }
 
 /*

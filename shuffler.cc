@@ -2333,7 +2333,7 @@ static void forw_progress_shufsendq(struct outset *oset) {
  * the waitq that can go.
  *
  * @param oq the output queue we are working on
- * @param oput output we just sent (can be NULL if we had an error)
+ * @param oput output we just sent (or failed to send)
  */
 static void forw_start_next(struct outqueue *oq, struct output *oput) {
   struct outset *oset;
@@ -2344,19 +2344,15 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
   struct request *req;
 
   oset = oq->myset;
-  if (oput)
-    mlog(SHUF_CALL, "forw_start_next: to=[%d.%d] %s dst=%p, oput=%p (R%d-%d)",
-       oq->grank, oq->subrank, outset_typstr(oset->settype), oq->dst,
-       oput, oset->shuf->grank, oput->outseq);
-  else
-    mlog(SHUF_CALL, "forw_start_next: to=[%d.%d] %s dst=%p, oput=null",
-       oq->grank, oq->subrank, outset_typstr(oset->settype), oq->dst);
+  mlog(SHUF_CALL, "forw_start_next: to=[%d.%d] %s dst=%p, oput=%p (R%d-%d)",
+     oq->grank, oq->subrank, outset_typstr(oset->settype), oq->dst,
+     oput, oset->shuf->grank, oput->outseq);
 
   /*
    * get rid of handle if we've got one (XXX should we try and recycle
    * it?  how much memory does caching handles cost us?)
    */
-  if (oput && oput->outhand) {
+  if (oput->outhand) {
     HG_Destroy(oput->outhand);
     oput->outhand = NULL;
   }
@@ -2372,32 +2368,30 @@ static void forw_start_next(struct outqueue *oq, struct output *oput) {
   }
 
   flush_done = false;
-  if (oput) {
 
-    /* flushing?  see if we finished everying at and before oqflush_output */
-    if (oq->oqflushing && oput == oq->oqflush_output) {
+  /* flushing?  see if we finished everying at and before oqflush_output */
+  if (oq->oqflushing && oput == oq->oqflush_output) {
 
-      if (oput == XTAILQ_FIRST(&oq->outs)) {  /* nothing before us? */
-        flush_done = true; /* so we call done_oq_flush() after unlock */
-        oq->oqflushing = 0;
-        oq->oqflush_output = NULL;
-        mlog(SHUF_D1, "forw_start_next: flush done!");
-      } else {
-        /* set oqflush_output to pending earlier request */
-        oq->oqflush_output = XTAILQ_PREV(oput, sending_outputs, q);
-        mlog(SHUF_D1, "forw_start_next: flush update to %p",
-             oq->oqflush_output);
-        shufcount(&oq->cntoqflushorder);
-      }
-
+    if (oput == XTAILQ_FIRST(&oq->outs)) {  /* nothing before us? */
+      flush_done = true; /* so we call done_oq_flush() after unlock */
+      oq->oqflushing = 0;
+      oq->oqflush_output = NULL;
+      mlog(SHUF_D1, "forw_start_next: flush done!");
+    } else {
+      /* set oqflush_output to pending earlier request */
+      oq->oqflush_output = XTAILQ_PREV(oput, sending_outputs, q);
+      mlog(SHUF_D1, "forw_start_next: flush update to %p",
+           oq->oqflush_output);
+      shufcount(&oq->cntoqflushorder);
     }
 
-    XTAILQ_REMOVE(&oq->outs, oput, q);
-    mlog(SHUF_D1, "forw_start_next: done with output=%p, oseq=%d",
-         oput, oput->outseq);
-    free(oput);
-    oput = NULL;
   }
+
+  XTAILQ_REMOVE(&oq->outs, oput, q);
+  mlog(SHUF_D1, "forw_start_next: done with output=%p, oseq=%d",
+       oput, oput->outseq);
+  free(oput);
+  oput = NULL;
   if (oq->nsending > 0) oq->nsending--;
   mlog(SHUF_D1, "forw_start_next: dst=%p nsending=%d", oq->dst, oq->nsending);
 

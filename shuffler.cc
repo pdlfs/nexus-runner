@@ -708,6 +708,7 @@ static int shuffler_init_outset(struct outset *oset, int maxoqrpc,
   XTAILQ_INIT(&oset->shufsendq);
   shufzero(&oset->os_senderlimit);
   /* oqs init'd by ctor */
+  oset->osetflushing = 0;
   oset->oqflush_counter = acnt32_alloc();
   if (oset->oqflush_counter == NULL)
     goto err;

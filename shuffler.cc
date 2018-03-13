@@ -768,6 +768,15 @@ err:
 int shuffler_init_hgthread(struct shuffler *sh, struct hgthread *hgt,
                            hg_class_t *cls, hg_context_t *ctx,
                            hg_rpc_cb_t rpchand) {
+  /* XXX: begin single_hgmode hack */
+  const char *myfunname = sh->funname;
+
+  /* hack a new name for local */
+  if (sh->single_hgmode && hgt == &sh->hgt_local) {
+      myfunname = "3hop-local-hack";   /* XXX: hardwire */
+  }
+  /* XXX: end single_hgmode hack */
+
   /* zero everything.  setting nrunning to 0 indicates ntask is not valid */
   memset(hgt, 0, sizeof(*hgt));
   hgt->hgshuf = sh;
@@ -779,7 +788,7 @@ int shuffler_init_hgthread(struct shuffler *sh, struct hgthread *hgt,
    * there is no API to unregister an RPC other than shutting down
    * mercury, so hopefully HG_Register_data() can't fail...
    */
-  hgt->rpcid = HG_Register_name(cls, sh->funname,
+  hgt->rpcid = HG_Register_name(cls, myfunname,
                  hg_proc_rpcin_t, hg_proc_rpcout_t,  rpchand);
   if (HG_Register_data(cls, hgt->rpcid, hgt, NULL) != HG_SUCCESS)
     return(-1);
@@ -881,6 +890,7 @@ shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
   sh->local_rlq.oqflush_counter = NULL;
   sh->remoteq.oqflush_counter = NULL;
 
+  sh->single_hgmode = 0;       /* XXX */
   sh->grank = myrank;
   for (lcv = 0 ; lcv < FLUSH_NTYPES ; lcv++) {
     shufzero(&sh->cntflush[lcv]);
@@ -924,6 +934,10 @@ shuffler_t shuffler_init(nexus_ctx_t nxp, char *funname,
   nexus_iter_free(&nit);
   if (rv < 0) goto err;
   acnt32_set(sh->seqsrc, 0);
+
+  /* XXX: check mode for mercury workaround */
+  sh->single_hgmode = (nexus_hgcontext_local(nxp) ==
+                       nexus_hgcontext_remote(nxp));
 
   /* init hg thread state (but don't start yet).  allocs hg rpcid */
   rv = shuffler_init_hgthread(sh, &sh->hgt_local, nexus_hgclass_local(nxp),
@@ -1434,15 +1448,23 @@ static hg_return_t shuffler_respond_cb(const struct hg_cb_info *cbi) {
 
 static void *network_main(void *arg) {
   struct hgthread *hgt = (struct hgthread *)arg;
+  int is_hgtlocal;
   hg_return_t ret;
   unsigned int actual;
   struct museprobe network_use;
 
+  is_hgtlocal = (hgt == &hgt->hgshuf->hgt_local);
   museprobe_start(&network_use, MUSEPROBE_THREAD);
 
-  mlog(SHUF_CALL, "network_main start (local=%d)",
-       (hgt == &hgt->hgshuf->hgt_local));
+  mlog(SHUF_CALL, "network_main start (local=%d)", is_hgtlocal);
   while (hgt->nshutdown == 0) {
+
+    /* XXX hack for hgtlocal */
+    if (is_hgtlocal && hgt->hgshuf->single_hgmode) {
+        sleep(3);
+        continue;
+    }
+    /* XXX hack for hgtlocal */
 
     do {
       ret = HG_Trigger(hgt->mctx, 0, 1, &actual); /* triggers callbacks */
@@ -1463,13 +1485,11 @@ static void *network_main(void *arg) {
 
     shufcount(&hgt->nprogress);
   }
-  mlog(SHUF_CALL, "network_main exiting (local=%d)",
-       (hgt == &hgt->hgshuf->hgt_local));
+  mlog(SHUF_CALL, "network_main exiting (local=%d)", is_hgtlocal);
 
   hgt->nrunning = 0;
   museprobe_end(&network_use);
-  museprobe_print(&network_use,
-    (hgt == &hgt->hgshuf->hgt_local) ? "local" : "remote", -1);
+  museprobe_print(&network_use, (is_hgtlocal) ? "local" : "remote", -1);
 
   return(NULL);
 }

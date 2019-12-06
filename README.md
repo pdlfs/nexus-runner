@@ -36,7 +36,7 @@ shuffle, flush the system, and then exit.
 
 The topology of the run is specified using MPI options.
 The two variables are the number of nodes to use, and the number
-of processes to run on each node.  The configurarion of the
+of processes to run on each node.  The configuration of the
 3 hop shuffle is specified using nexus-runner command line
 flags.
 

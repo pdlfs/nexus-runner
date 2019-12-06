@@ -29,19 +29,19 @@
  */
 
 /*
- * nexus-runner.cc  run deltafs-nexus and report results
+ * nexus-runner.cc  run deltafs-nexus/deltafs-shuffle and report results
  * 14-Jun-2017  chuck@ece.cmu.edu
  */
 
 /*
- * this program tests/benchmarks the deltafs-nexus shuffle/routing
- * module.  we use MPI to managing the processes in the test.  the
+ * this program tests/benchmarks the deltafs-nexus and deltafs-shuffle
+ * modules.  we use MPI to managing the processes in the test.  the
  * test requires deltafs-nexus (which pulls in Mercury and MPI
- * itself).
+ * itself) and deltafs-shuffle packages.
  *
  * this is a peer-to-peer style application, so it contains both a
  * mercury RPC client and a mercury RPC server.  the client sends
- * "count" number of shuffler send requests via nexus to random ranks.
+ * "count" number of shuffle send requests via nexus to random ranks.
  * the application exits when all requested sends have completed
  * (finished processes will wait at a MPI barrier until all sending
  * and processing has completed).
@@ -57,7 +57,7 @@
  * itself does not have any topology configuration command line flags,
  * it uses whatever it gets from the MPI launcher.
  *
- * the shuffler queue config controls how much buffering is used and
+ * the shuffle queue config controls how much buffering is used and
  * how many RPCs can be active at one time.
  *
  * usage: nexus-runner [options] mercury-protocol [subnet]
@@ -79,7 +79,7 @@
  *  -t secs      timeout (alarm)
  *  -x           use network progressor for local requests (single hg mode)
  *
- * shuffler queue config:
+ * shuffle queue config:
  *  -B bytes     batch buffer target for network output queues
  *  -a bytes     batch buffer target for origin/client local output queues
  *  -b bytes     batch buffer target for relayed local output queues (to dst)
@@ -88,8 +88,8 @@
  *  -M count     maxrpcs for network output queues
  *  -m count     maxrpcs for origin/client local output queues
  *  -y count     maxrpcs for relayed local output queues (to dst)
- *  -Z count     remote RPC limit on shuffler_send
- *  -z count     local RPC limit on shuffler_send
+ *  -Z count     remote RPC limit on shuffle_enqueue
+ *  -z count     local RPC limit on shuffle_enqueue
  *
  * size related options:
  *  -i size      input req size (> 12 if specified)
@@ -151,8 +151,7 @@
 #include <mpi.h>   /* XXX: nexus requires this */
 
 #include <deltafs-nexus/deltafs-nexus_api.h>
-
-#include "shuffler.h"
+#include <deltafs-shuffle/shuffle_api.h>
 
 /*
  * helper/utility functions, included inline here so we are self-contained
@@ -429,24 +428,15 @@ struct gs {
     char *hgproto;           /* hg protocol to use */
     const char *hgsubnet;    /* subnet to use (XXX: assumes IP) */
     int baseport;            /* base port number */
-    int buftarg_net;         /* batch target for network queues */
-    int buftarg_origin;      /* batch target for origin/client local shm q's */
-    int buftarg_relay;       /* batch target for relayed local shm q's */
+    struct shuffle_opts so;  /* shuffle batch/queue opts */
     int count;               /* number of msgs to send/recv in a run */
     int excludeself;         /* exclude sending to self (skip those sends) */
     int flushrate;           /* do extra flushes while sending */
-    int deliverq_max;        /* max# reqs in deliverq before waitq */
-    int deliverq_thold;      /* delivery thread wakeup threshold */
     int loop;                /* loop through dsts rather than random sends */
     char *nxdumpspec;        /* file spec to nexus dump to */
     int minsndr;             /* rank must be >= minsndr to send requests */
     int odelay;              /* delay delivery output this many msec */
     struct timespec odspec;  /* odelay in a timespec for nanosleep(3) */
-    int maxrpcs_net;         /* max # outstanding RPCs, network */
-    int maxrpcs_origin;      /* max # outstanding RPCs, origin/cli shm q's */
-    int maxrpcs_relay;       /* max # outstanding RPCs, relayed shm q's */
-    int remoterpclim;        /* remote RPC limit on shuffler_send */
-    int localrpclim;         /* local RPC limit on shuffler_send */
     int quiet;               /* don't print so much */
     int rflag;               /* -r tag suffix spec'd */
     int rflagval;            /* value for -r */
@@ -488,7 +478,7 @@ struct is {
     int n;                   /* our instance number (0 .. n-1) */
     nexus_ctx_t nxp;         /* nexus context */
     char myfun[64];          /* my function name */
-    shuffler_t shand;        /* shuffler handler */
+    shuffle_t shand;         /* shuffle handler */
     int nsends;              /* number of times we've called send */
     int ncallbacks;          /* #times our callback was called */
 };
@@ -505,7 +495,7 @@ void sigalarm(int foo) {
         fprintf(stderr, "nsends=%d, ncallbacks=%d\n",
                 isa[lcv].nsends, isa[lcv].ncallbacks);
         /* only force to stderr if nprocs <= 4 */
-        shuffler_statedump(isa[lcv].shand, (g.size <= 4) ? 1 : 0);
+        shuffle_statedump(isa[lcv].shand, (g.size <= 4) ? 1 : 0);
     }
     fprintf(stderr, "Alarm clock\n");
     MPI_Finalize();
@@ -523,7 +513,7 @@ void sigusr1(int foo) {
         fprintf(stderr, "nsends=%d, ncallbacks=%d\n",
                 isa[lcv].nsends, isa[lcv].ncallbacks);
         /* only force to stderr if nprocs <= 4 */
-        shuffler_statedump(isa[lcv].shand, (g.size <= 4) ? 1 : 0);
+        shuffle_statedump(isa[lcv].shand, (g.size <= 4) ? 1 : 0);
     }
 }
 
@@ -554,7 +544,7 @@ static void usage(const char *msg) {
     fprintf(stderr, "\t-t sec      timeout (alarm), in seconds\n");
     fprintf(stderr, "\t-x          use network hg prog for local reqs\n");
 
-    fprintf(stderr, "shuffler queue config:\n");
+    fprintf(stderr, "shuffle queue config:\n");
     fprintf(stderr, "\t-B bytes    batch buf target for network\n");
     fprintf(stderr, "\t-a bytes    batch buf target for client/origin shm\n");
     fprintf(stderr, "\t-b bytes    batch buf target for relayed shm\n");
@@ -563,8 +553,8 @@ static void usage(const char *msg) {
     fprintf(stderr, "\t-M count    maxrpcs for network output queues\n");
     fprintf(stderr, "\t-m count    maxrpcs for shm client/origin queues\n");
     fprintf(stderr, "\t-y count    maxrpcs for shm relayed queues\n");
-    fprintf(stderr, "\t-Z count    remote RPC limit on shuffler_send\n");
-    fprintf(stderr, "\t-z count    local RPC limit on shuffler_send\n");
+    fprintf(stderr, "\t-Z count    remote RPC limit on shuffle_enqueue\n");
+    fprintf(stderr, "\t-z count    local RPC limit on shuffle_enqueue\n");
     fprintf(stderr, "\nsize related options:\n");
     fprintf(stderr, "\t-i size     input req size (> 12 if specified)\n");
     fprintf(stderr, "\ndefault payload size is 12.\n\n");
@@ -591,7 +581,7 @@ skip_prints:
 static void *run_instance(void *arg);   /* run one instance */
 static void do_delivery(int src, int dst, uint32_t type,
     void *d, uint32_t datalen);
-static void do_flush(shuffler_t sh, int verbo);
+static void do_flush(shuffle_t sh, int verbo);
 
 /*
  * main program.  usage:
@@ -622,20 +612,21 @@ int main(int argc, char **argv) {
 
     /* setup default to zero/null, except as noted below */
     memset(&g, 0, sizeof(g));
+    shuffle_opts_init(&g.so);
     if (MPI_Comm_rank(MPI_COMM_WORLD, &myrank) != MPI_SUCCESS)
         complain(1, 0, "unable to get MPI rank");
     if (MPI_Comm_size(MPI_COMM_WORLD, &g.size) != MPI_SUCCESS)
         complain(1, 0, "unable to get MPI size");
     g.baseport = DEF_BASEPORT;
-    g.buftarg_net = DEF_BUFTARGET;
-    g.buftarg_origin = DEF_BUFTARGET;
-    g.buftarg_relay = DEF_BUFTARGET;
+    g.so.rbuftarget = DEF_BUFTARGET;
+    g.so.lobuftarget = DEF_BUFTARGET;
+    g.so.lrbuftarget = DEF_BUFTARGET;
     g.count = DEF_COUNT;
-    g.deliverq_max = DEF_DELIVERQMAX;
-    g.deliverq_thold = DEF_DELIVERQTHR;
-    g.maxrpcs_net = DEF_MAXRPCS;
-    g.maxrpcs_origin = DEF_MAXRPCS;
-    g.maxrpcs_relay = DEF_MAXRPCS;
+    g.so.deliverq_max = DEF_DELIVERQMAX;
+    g.so.deliverq_threshold = DEF_DELIVERQTHR;
+    g.so.rmaxrpc = DEF_MAXRPCS;
+    g.so.lomaxrpc = DEF_MAXRPCS;
+    g.so.lrmaxrpc = DEF_MAXRPCS;
     g.rcvr_only = -1;            /* disable by default */
     g.minsndr = 0;
     g.maxsndr = g.size - 1;      /* everyone sends by default */
@@ -649,16 +640,16 @@ int main(int argc, char **argv) {
   "a:B:b:C:c:D:d:E:eF:f:h:I:i:LlM:m:N:n:O:o:p:qR:r:S:s:Tt:X:xy:Z:z:")) != -1) {
         switch (ch) {
             case 'a':
-                g.buftarg_origin = atoi(optarg);
-                if (g.buftarg_origin < 1) usage("bad buftarget origin");
+                g.so.lobuftarget = atoi(optarg);
+                if (g.so.lobuftarget < 1) usage("bad buftarget origin");
                 break;
             case 'B':
-                g.buftarg_net = atoi(optarg);
-                if (g.buftarg_net < 1) usage("bad buftarget net");
+                g.so.rbuftarget = atoi(optarg);
+                if (g.so.rbuftarget < 1) usage("bad buftarget net");
                 break;
             case 'b':
-                g.buftarg_relay = atoi(optarg);
-                if (g.buftarg_relay < 1) usage("bad buftarget relay");
+                g.so.lrbuftarget = atoi(optarg);
+                if (g.so.lrbuftarget < 1) usage("bad buftarget relay");
                 break;
             case 'C':
                 g.cmask = optarg;
@@ -671,8 +662,8 @@ int main(int argc, char **argv) {
                 g.defpri = optarg;
                 break;
             case 'd':
-                g.deliverq_max = atoi(optarg);
-                if (g.deliverq_max == 0) usage("bad deliverq_max shm");
+                g.so.deliverq_max = atoi(optarg);
+                if (g.so.deliverq_max == 0) usage("bad deliverq_max shm");
                 break;
             case 'E':
                 g.emask = optarg;
@@ -688,8 +679,8 @@ int main(int argc, char **argv) {
                 if (g.flushrate < 0) usage("bad flush rate");
                 break;
             case 'h':
-                g.deliverq_thold = atoi(optarg);
-                if (g.deliverq_thold < 0) usage("bad deliver threshold");
+                g.so.deliverq_threshold = atoi(optarg);
+                if (g.so.deliverq_threshold < 0) usage("bad deliver threshold");
                 break;
             case 'I':
                 g.msgbufsz = getsize(optarg);
@@ -706,12 +697,12 @@ int main(int argc, char **argv) {
                 g.loop = 1;
                 break;
             case 'M':
-                g.maxrpcs_net = atoi(optarg);
-                if (g.maxrpcs_net < 1) usage("bad maxrpc net");
+                g.so.rmaxrpc = atoi(optarg);
+                if (g.so.rmaxrpc < 1) usage("bad maxrpc net");
                 break;
             case 'm':
-                g.maxrpcs_origin = atoi(optarg);
-                if (g.maxrpcs_origin < 1) usage("bad maxrpc origin");
+                g.so.lomaxrpc = atoi(optarg);
+                if (g.so.lomaxrpc < 1) usage("bad maxrpc origin");
                 break;
             case 'N':
                 g.nxdumpspec = optarg;
@@ -770,16 +761,16 @@ int main(int argc, char **argv) {
                 g.xsinglehg = 1;
                 break;
             case 'y':
-                g.maxrpcs_relay = atoi(optarg);
-                if (g.maxrpcs_relay < 1) usage("bad maxrpc relay");
+                g.so.lrmaxrpc = atoi(optarg);
+                if (g.so.lrmaxrpc < 1) usage("bad maxrpc relay");
                 break;
             case 'Z':
-                g.remoterpclim = atoi(optarg);
-                if (g.remoterpclim < 0) usage("bad remote rpc limit");
+                g.so.remotesenderlimit = atoi(optarg);
+                if (g.so.remotesenderlimit < 0) usage("bad remote rpc limit");
                 break;
             case 'z':
-                g.localrpclim = atoi(optarg);
-                if (g.localrpclim < 0) usage("bad local rpc limit");
+                g.so.localsenderlimit = atoi(optarg);
+                if (g.so.localsenderlimit < 0) usage("bad local rpc limit");
                 break;
             default:
                 usage(NULL);
@@ -824,13 +815,13 @@ int main(int argc, char **argv) {
         printf("\tsinglehg   = %d\n", g.xsinglehg);
         printf("sizes:\n");
         printf("\tbuftarget  = %d / %d / %d (net/origin/relay)\n",
-               g.buftarg_net, g.buftarg_origin, g.buftarg_relay);
+               g.so.rbuftarget, g.so.lobuftarget, g.so.lrbuftarget);
         printf("\tmaxrpcs    = %d / %d / %d (net/origin/relay)\n",
-               g.maxrpcs_net, g.maxrpcs_origin, g.maxrpcs_relay);
+               g.so.rmaxrpc, g.so.lomaxrpc, g.so.lrmaxrpc);
         printf("\trpclimits  = %d / %d (local/remote)\n",
-               g.localrpclim, g.remoterpclim);
-        printf("\tdeliverqmx = %d\n", g.deliverq_max);
-        printf("\tdeliverthd = %d\n", g.deliverq_thold);
+               g.so.localsenderlimit, g.so.remotesenderlimit);
+        printf("\tdeliverqmx = %d\n", g.so.deliverq_max);
+        printf("\tdeliverthd = %d\n", g.so.deliverq_threshold);
         if (g.odelay > 0)
             printf("\tout_delay  = %d msec\n", g.odelay);
         printf("\tinput      = %d\n", (g.inreqsz == 0) ? 12 : g.inreqsz);
@@ -860,11 +851,11 @@ int main(int argc, char **argv) {
 
     /* plug in the log options */
     if (g.lenable) {
-        rv = shuffler_cfglog(g.max_xtra, g.defpri, g.serrpri, g.cmask,
-                             g.emask, g.logfile, g.o_alllogs, g.msgbufsz,
-                             g.o_stderr, g.o_xstderr);
+        rv = shuffle_cfglog(g.max_xtra, g.defpri, g.serrpri, g.cmask,
+                            g.emask, g.logfile, g.o_alllogs, g.msgbufsz,
+                            g.o_stderr, g.o_xstderr);
         if (rv < 0) {
-            fprintf(stderr, "shuffler_cfglog failed!\n");
+            fprintf(stderr, "shuffle_cfglog failed!\n");
             exit(-1);
         }
     }
@@ -944,7 +935,7 @@ void *run_instance(void *arg) {
         int lr, ls;
         if (mpi_localcfg(MPI_COMM_WORLD, &lr, &ls) < 0) /* HACK! */
             complain(1, 0, "mpi_localcfg failed?");
-        myurl = mercury_gen_ipurl(g.hgproto, g.hgsubnet, 0, 10000+lr, ls);
+        myurl = mercury_gen_ipurl(g.hgproto, g.hgsubnet, 0, g.baseport+lr, ls);
         if (!myurl)
             complain(1, 0, "mercury_gen_ipurl failed?");
     } else if (strlen(g.hgsubnet)) {
@@ -987,11 +978,8 @@ void *run_instance(void *arg) {
     /* make a funcion name and register it in both HGs */
     snprintf(isa[n].myfun, sizeof(isa[n].myfun), "f%d", n);
 
-    isa[n].shand = shuffler_init(isa[n].nxp, isa[n].myfun, g.localrpclim,
-                   g.remoterpclim, g.maxrpcs_origin,
-                   g.buftarg_origin, g.maxrpcs_relay, g.buftarg_relay,
-                   g.maxrpcs_net, g.buftarg_net, g.deliverq_max,
-                   g.deliverq_thold, do_delivery);
+    isa[n].shand = shuffle_init(isa[n].nxp, isa[n].myfun,
+                                do_delivery, &g.so);
     flcnt = 0;
 
     /* make sure that all ranks are ready to recv before we start sending */
@@ -1025,10 +1013,10 @@ void *run_instance(void *arg) {
                 printf("%d: snd msg %d->%d, t=%d, lcv=%d, sz=%d\n",
                        myrank, myrank, sendto, lcv % 4, lcv, mylen);
             /* vary type value by mod'ing lcv by 4 */
-            ret = shuffler_send(isa[n].shand, sendto, lcv % 4,
-                                msg, mylen);
+            ret = shuffle_enqueue(isa[n].shand, sendto, lcv % 4,
+                                 msg, mylen);
             if (ret != HG_SUCCESS)
-                fprintf(stderr, "shuffler_send failed(%d)\n", ret);
+                fprintf(stderr, "shuffle_enqueue failed(%d)\n", ret);
             isa[n].nsends++;
         }
 
@@ -1063,9 +1051,9 @@ void *run_instance(void *arg) {
     /* flush it now */
     do_flush(isa[n].shand, 1);
 
-    ret = shuffler_shutdown(isa[n].shand);
+    ret = shuffle_shutdown(isa[n].shand);
     if (ret != HG_SUCCESS)
-            fprintf(stderr, "shuffler_flush shutdown failed(%d)\n", ret);
+            fprintf(stderr, "shuffle_flush shutdown failed(%d)\n", ret);
     printf("%d: shuf shutdown.\n", myrank);
 
     nexus_destroy(isa[n].nxp);
@@ -1082,7 +1070,7 @@ void *run_instance(void *arg) {
 }
 
 /*
- * do_delivery: callback from shuffler for doing a local delivery
+ * do_delivery: callback from shuffle for doing a local delivery
  *
  * @param src src rank
  * @param dst dst rank (should be us!)
@@ -1111,38 +1099,38 @@ static void do_delivery(int src, int dst, uint32_t type,
 }
 
 /*
- * do_flush: do a full shuffler flush (collective call)
+ * do_flush: do a full shuffle flush (collective call)
  *
- * @param sh shuffler to flush
+ * @param sh shuffle to flush
  * @param verbo have rank 0 print flush info
  */
-static void do_flush(shuffler_t sh, int verbo) {
+static void do_flush(shuffle_t sh, int verbo) {
     hg_return_t ret;
 
-    ret = shuffler_flush_originqs(sh);  /* clear out SRC->SRCREP */
+    ret = shuffle_flush_originqs(sh);  /* clear out SRC->SRCREP */
     if (ret != HG_SUCCESS)
-            fprintf(stderr, "shuffler_flush local failed(%d)\n", ret);
+            fprintf(stderr, "shuffle_flush local failed(%d)\n", ret);
     MPI_Barrier(MPI_COMM_WORLD);
     if (verbo && myrank == 0)
         printf("%d: flushed local (hop1).\n", myrank);
 
-    ret = shuffler_flush_remoteqs(sh); /* clear SRCREP->DSTREP */
+    ret = shuffle_flush_remoteqs(sh); /* clear SRCREP->DSTREP */
     if (ret != HG_SUCCESS)
-            fprintf(stderr, "shuffler_flush remote failed(%d)\n", ret);
+            fprintf(stderr, "shuffle_flush remote failed(%d)\n", ret);
     MPI_Barrier(MPI_COMM_WORLD);
     if (verbo && myrank == 0)
         printf("%d: flushed remote (hop2).\n", myrank);
 
-    ret = shuffler_flush_relayqs(sh);  /* clear DSTREP->DST */
+    ret = shuffle_flush_relayqs(sh);  /* clear DSTREP->DST */
     if (ret != HG_SUCCESS)
-            fprintf(stderr, "shuffler_flush local2 failed(%d)\n", ret);
+            fprintf(stderr, "shuffle_flush local2 failed(%d)\n", ret);
     MPI_Barrier(MPI_COMM_WORLD);
     if (verbo && myrank == 0)
         printf("%d: flushed local (hop3).\n", myrank);
 
-    ret = shuffler_flush_delivery(sh); /* clear deliverq */
+    ret = shuffle_flush_delivery(sh); /* clear deliverq */
     if (ret != HG_SUCCESS)
-            fprintf(stderr, "shuffler_flush delivery failed(%d)\n", ret);
+            fprintf(stderr, "shuffle_flush delivery failed(%d)\n", ret);
     if (verbo && myrank == 0)
         printf("%d: flushed delivery.\n", myrank);
 

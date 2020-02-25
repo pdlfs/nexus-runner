@@ -63,9 +63,11 @@
  * usage: nexus-runner [options] mercury-protocol [subnet]
  *
  * options:
+ *  -A           use broadcast mode for all sends
  *  -c count     number of shuffle send ops to perform
  *  -e           exclude sending to ourself (skip those sends)
  *  -f rate      do a flush (collective) every 'rate' sends
+ *  -k           when using broadcast mode, send copy to ourself
  *  -l           loop through dsts rather than random sends
  *  -N filespec  do a nexus_dump() to filespec at startup
  *  -n minsndr   rank must be >= minsndr to send requests
@@ -428,6 +430,8 @@ struct gs {
     char *hgproto;           /* hg protocol to use */
     const char *hgsubnet;    /* subnet to use (XXX: assumes IP) */
     int baseport;            /* base port number */
+    int broadcast;           /* use broadcast mode for all sends */
+    int broadcast_flags;     /* set SHUFFLE_BCAST_SELF here if -k */
     struct shuffle_opts so;  /* shuffle batch/queue opts */
     int count;               /* number of msgs to send/recv in a run */
     int excludeself;         /* exclude sending to self (skip those sends) */
@@ -544,6 +548,10 @@ static void usage(const char *msg) {
     fprintf(stderr, "\t-t sec      timeout (alarm), in seconds\n");
     fprintf(stderr, "\t-x          use network hg prog for local reqs\n");
 
+    fprintf(stderr, "broadcast options:\n");
+    fprintf(stderr, "\t-A          use broadcast mode for all sends\n");
+    fprintf(stderr, "\t-k          send broadcasts to ourself too\n");
+
     fprintf(stderr, "shuffle queue config:\n");
     fprintf(stderr, "\t-B bytes    batch buf target for network\n");
     fprintf(stderr, "\t-a bytes    batch buf target for client/origin shm\n");
@@ -637,8 +645,11 @@ int main(int argc, char **argv) {
     g.max_xtra = g.size;
 
     while ((ch = getopt(argc, argv,
-  "a:B:b:C:c:D:d:E:eF:f:h:I:i:LlM:m:N:n:O:o:p:qR:r:S:s:Tt:X:xy:Z:z:")) != -1) {
+"Aa:B:b:C:c:D:d:E:eF:f:h:I:i:kLlM:m:N:n:O:o:p:qR:r:S:s:Tt:X:xy:Z:z:")) != -1) {
         switch (ch) {
+            case 'A':
+                g.broadcast = 1;
+                break;
             case 'a':
                 g.so.lobuftarget = atoi(optarg);
                 if (g.so.lobuftarget < 1) usage("bad buftarget origin");
@@ -689,6 +700,9 @@ int main(int argc, char **argv) {
             case 'i':
                 g.inreqsz = getsize(optarg);
                 if (g.inreqsz <= 12) usage("bad inreqsz (must be > 12)");
+                break;
+            case 'k':
+                g.broadcast_flags |= SHUFFLE_BCAST_SELF;
                 break;
             case 'L':
                 g.lenable = 1;
@@ -797,6 +811,8 @@ int main(int argc, char **argv) {
         printf("\thgsubnet   = %s\n", g.hgsubnet);
         printf("\tbaseport   = %d\n", g.baseport);
         printf("\tcount      = %d\n", g.count);
+        printf("\tbroadcast  = %s%s\n", (g.broadcast) ? "yes" : "no",
+               (g.broadcast_flags & SHUFFLE_BCAST_SELF) ? " self-flag" : "");
         printf("\texcludeself= %d\n", g.excludeself);
         if (g.flushrate)
             printf("\tflushrate  = %d\n", g.flushrate);
@@ -1009,12 +1025,21 @@ void *run_instance(void *arg) {
             msg[0] = htonl(lcv);
             msg[1] = htonl(myrank);
             msg[2] = htonl(sendto);
-            if (!g.quiet)
-                printf("%d: snd msg %d->%d, t=%d, lcv=%d, sz=%d\n",
-                       myrank, myrank, sendto, lcv % 4, lcv, mylen);
+            if (!g.quiet) {
+                if (g.broadcast)
+                    printf("%d: snd msg %d->*, t=%d, lcv=%d, sz=%d\n",
+                           myrank, myrank, lcv % 4, lcv, mylen);
+                else
+                    printf("%d: snd msg %d->%d, t=%d, lcv=%d, sz=%d\n",
+                           myrank, myrank, sendto, lcv % 4, lcv, mylen);
+            }
             /* vary type value by mod'ing lcv by 4 */
-            ret = shuffle_enqueue(isa[n].shand, sendto, lcv % 4,
-                                 msg, mylen);
+            if (g.broadcast)
+                ret = shuffle_enqueue_broadcast(isa[n].shand, lcv % 4,
+                                     msg, mylen, g.broadcast_flags);
+            else
+                ret = shuffle_enqueue(isa[n].shand, sendto, lcv % 4,
+                                     msg, mylen);
             if (ret != HG_SUCCESS)
                 fprintf(stderr, "shuffle_enqueue failed(%d)\n", ret);
             isa[n].nsends++;
@@ -1090,8 +1115,9 @@ static void do_delivery(int src, int dst, uint32_t type,
         memset(msg, 0, sizeof(msg));
 
     if (!g.quiet)
-        printf("%d: got msg %d->%d, t=%d, len=%d [%d %d %d]\n",
-               myrank, src, dst, type, datalen,
+        printf("%d: got msg %d->%d, t=%d%s, len=%d [%d %d %d]\n",
+               myrank, src, dst, type & SHUFFLE_RTYPE_USRBITS,
+               (type & SHUFFLE_RTYPE_BCAST) ? ".b" : "", datalen,
                ntohl(msg[0]), ntohl(msg[1]), ntohl(msg[2]));
 
     if (g.odelay > 0)    /* add some fake processing delay if requested */

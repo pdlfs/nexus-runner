@@ -927,9 +927,9 @@ void *run_instance(void *arg) {
     hg_return_t ret;
     uint32_t *msg, msg_store[3];
     char *myurl, *nbuf;
-    hg_class_t *cls;
-    hg_context_t *ctx;
-    progressor_handle_t *phand;
+    hg_class_t *cls = NULL;
+    hg_context_t *ctx = NULL;
+    progressor_handle_t *phand = NULL;
 
     useprobe_start(&instuse, USEPROBE_THREAD);
     if (!g.quiet)
@@ -1085,6 +1085,8 @@ void *run_instance(void *arg) {
     if (msg != msg_store) free(msg);
 
     mercury_progressor_freehandle(phand); /* ignore errors */
+    HG_Context_destroy(ctx);
+    HG_Finalize(cls);
 
     useprobe_end(&instuse);
     if (g.quiet == 0 || g.size <= 4) {

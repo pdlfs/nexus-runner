@@ -667,7 +667,7 @@ int main(int argc, char **argv) {
                 break;
             case 'c':
                 g.count = atoi(optarg);
-                if (g.count < 1) usage("bad count");
+                if (g.count < 0) usage("bad count");
                 break;
             case 'D':
                 g.defpri = optarg;

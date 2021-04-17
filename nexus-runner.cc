@@ -67,6 +67,7 @@
  *  -c count     number of shuffle send ops to perform
  *  -e           exclude sending to ourself (skip those sends)
  *  -f rate      do a flush (collective) every 'rate' sends
+ *  -j na        use specified transport instead of na+sm for local hops
  *  -k           when using broadcast mode, send copy to ourself
  *  -l           loop through dsts rather than random sends
  *  -N filespec  do a nexus_dump() to filespec at startup
@@ -429,6 +430,7 @@ struct gs {
     int size;                /* world size (from MPI) */
     char *hgproto;           /* hg protocol to use */
     const char *hgsubnet;    /* subnet to use (XXX: assumes IP) */
+    char *altlocal;          /* alternate local transport */
     int baseport;            /* base port number */
     int broadcast;           /* use broadcast mode for all sends */
     int broadcast_flags;     /* set SHUFFLE_BCAST_SELF here if -k */
@@ -535,6 +537,7 @@ static void usage(const char *msg) {
     fprintf(stderr, "\t-c count    number of shuffle send ops to perform\n");
     fprintf(stderr, "\t-e          exclude sending to self (skip sends)\n");
     fprintf(stderr, "\t-f rate     do a flush every 'rate' sends\n");
+    fprintf(stderr, "\t-j alt      alternate local transport (not na+sm)\n");
     fprintf(stderr, "\t-l          loop through dsts (no random sends)\n");
     fprintf(stderr, "\t-N filespec nexus dump to this filespec\n");
     fprintf(stderr, "\t-n minsndr  rank must be >= minsndr to send requests\n");
@@ -645,7 +648,8 @@ int main(int argc, char **argv) {
     g.max_xtra = g.size;
 
     while ((ch = getopt(argc, argv,
-"Aa:B:b:C:c:D:d:E:eF:f:h:I:i:kLlM:m:N:n:O:o:p:qR:r:S:s:Tt:X:xy:Z:z:")) != -1) {
+    "Aa:B:b:C:c:D:d:E:eF:f:h:I:i:j:kLlM:m:N:n:O:o:p:qR:r:S:s:Tt:X:xy:Z:z:")) 
+                                    != -1) {
         switch (ch) {
             case 'A':
                 g.broadcast = 1;
@@ -700,6 +704,9 @@ int main(int argc, char **argv) {
             case 'i':
                 g.inreqsz = getsize(optarg);
                 if (g.inreqsz <= 12) usage("bad inreqsz (must be > 12)");
+                break;
+            case 'j':
+                g.altlocal = optarg;
                 break;
             case 'k':
                 g.broadcast_flags |= SHUFFLE_BCAST_SELF;
@@ -802,6 +809,8 @@ int main(int argc, char **argv) {
         snprintf(g.tagsuffix, sizeof(g.tagsuffix), "-%d-%d",
                  g.count, g.rflagval);
     }
+    if (g.altlocal && g.xsinglehg)
+      usage("cannot specify -j and -x at the same time");
 
     if (myrank == 0) {
         printf("\n%s options:\n", argv0);
@@ -809,6 +818,8 @@ int main(int argc, char **argv) {
         printf("\tMPI_size   = %d\n", g.size);
         printf("\thgproto    = %s\n", g.hgproto);
         printf("\thgsubnet   = %s\n", g.hgsubnet);
+        if (g.altlocal)
+            printf("\taltlocal   = %s\n", g.altlocal);
         printf("\tbaseport   = %d\n", g.baseport);
         printf("\tcount      = %d\n", g.count);
         printf("\tbroadcast  = %s%s\n", (g.broadcast) ? "yes" : "no",
@@ -927,9 +938,10 @@ void *run_instance(void *arg) {
     hg_return_t ret;
     uint32_t *msg, msg_store[3];
     char *myurl, *nbuf;
-    hg_class_t *cls = NULL;
-    hg_context_t *ctx = NULL;
-    progressor_handle_t *phand = NULL;
+    hg_class_t *cls = NULL, *altcls = NULL;
+    hg_context_t *ctx = NULL, *altctx = NULL;
+    progressor_handle_t *nethand = NULL;
+    progressor_handle_t *localhand = NULL;  /* makes default na+sm */
 
     useprobe_start(&instuse, USEPROBE_THREAD);
     if (!g.quiet)
@@ -968,14 +980,29 @@ void *run_instance(void *arg) {
     ctx = HG_Context_create(cls);
     if (!ctx)
         complain(1, 0, "HG_Context_create failed!");
-    phand = mercury_progressor_init(cls, ctx);
-    if (!phand)
+    nethand = mercury_progressor_init(cls, ctx);
+    if (!nethand)
         complain(1, 0, "mercury_progressor_init failed!");
 
-    if (g.xsinglehg)
-        isa[n].nxp = nexus_bootstrap(phand, phand);  /* use phand for local */
-    else
-        isa[n].nxp = nexus_bootstrap(phand, NULL);
+    if (g.xsinglehg) {
+        localhand = nethand;   /* use nethand for local too */
+    } else if (g.altlocal) {
+        /* use an alternate local mercury */
+        altcls = HG_Init(g.altlocal, HG_TRUE);
+        if (!altcls) {
+            complain(1, 0, "altlocal init failed");
+        }
+        altctx = HG_Context_create(altcls);
+        if (!altctx) {
+            complain(1, 0, "altlocal ctx create failed");
+        }
+        localhand = mercury_progressor_init(altcls, altctx);
+        if (!localhand) {
+            complain(1, 0, "altlocal progressor init failed");
+        }
+    }
+
+    isa[n].nxp = nexus_bootstrap(nethand, localhand);
     if (!isa[n].nxp)
         complain(1, 0, "%d: nexus_bootstrap failed", myrank);
     if (!g.quiet)
@@ -1084,7 +1111,15 @@ void *run_instance(void *arg) {
     nexus_destroy(isa[n].nxp);
     if (msg != msg_store) free(msg);
 
-    mercury_progressor_freehandle(phand); /* ignore errors */
+    if (localhand && localhand != nethand) {   /* used -j flag? */
+        /* for alt local case we must dispose of local mercury */
+        mercury_progressor_freehandle(localhand);
+        HG_Context_destroy(altctx);
+        HG_Finalize(altcls);
+    }
+    localhand = NULL;
+
+    mercury_progressor_freehandle(nethand); /* ignore errors */
     HG_Context_destroy(ctx);
     HG_Finalize(cls);
 
